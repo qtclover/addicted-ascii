@@ -131,8 +131,20 @@ function resize() {
   atlases.clear();
   lastAtlas = null; lastBucket = -1;
   grp = null;
+  watchDpr();
 }
 addEventListener("resize", resize);
+
+/* Dragging the window to a monitor with different scaling changes
+   devicePixelRatio without reliably firing "resize", which leaves the canvas
+   rendering at the old density — it looks soft until you nudge the window. */
+let dprQuery = null;
+function onDprChange() { resize(); }
+function watchDpr() {
+  if (dprQuery) dprQuery.removeEventListener("change", onDprChange);
+  dprQuery = matchMedia("(resolution: " + (devicePixelRatio || 1) + "dppx)");
+  dprQuery.addEventListener("change", onDprChange, { once: true });
+}
 
 /* ---------- tone curve ---------- */
 let TONE = null;
