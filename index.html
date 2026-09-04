@@ -1,0 +1,1110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>addicted</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:wght@400&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{display:block;width:100vw;height:100vh}
+  #hud{position:fixed;left:10px;top:8px;color:#5f8;font:11px ui-monospace,Consolas,monospace;opacity:.7;display:none}
+  /* buttons ported from addicted.md, monochrome to match the glyph field */
+  #links{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:5px;color:#8c8c8c;
+         font:clamp(13px,1.35vw,18px) ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+         letter-spacing:.06em;user-select:none;white-space:nowrap;
+         opacity:0;transition:opacity .5s ease}
+  #links.on{opacity:1}
+  #links.idle{opacity:.28}
+  #links .copy{cursor:pointer;padding:5px 7px;color:#c8c8c8;
+               text-shadow:0 0 8px rgba(255,255,255,.24);
+               transition:color .18s ease,text-shadow .18s ease}
+  #links .copy:hover{color:#fff;text-decoration:underline;text-shadow:0 0 11px rgba(255,255,255,.85)}
+  #links .sep{opacity:.4}
+  #links .ch{display:inline-block;min-width:.62em;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="links">
+  [
+  <span class="copy" data-copy="superphoenix26">discord</span>
+  <span class="sep">|</span>
+  <span class="copy" data-copy="addicted@ewho.re">mail</span>
+  ]
+</div>
+<script>
+"use strict";
+/* ============================================================
+   "addicted" — 21st.dev-style ASCII/hexdump effect, Canvas2D.
+   Source is generated, not a photo: spinning donut.c torus +
+   wordmark on a tilted reflective floor. Edit PARAMS and reload.
+   ?fps -> frame time readout   ?selftest -> console assert sweep
+   ============================================================ */
+
+const PARAMS = {
+  renderMode: "hexdump",
+  bgMode: "blur", bgBlur: 40, bgOpacity: 13,
+  cellSize: 6, coverage: 100, invert: false, styleBlend: "source-over",   /* was 8 — finer grid */
+  charSet: "standard", customChars: "",
+  brightness: 12, contrast: 115, edgeEmphasis: 25, density: 0,
+  toneCurve: [{x:0,y:0},{x:0.35,y:0.20},{x:0.75,y:0.88},{x:1,y:1}],
+  tint: "#3ca6ff", tintOpacity: 12, overlayBlend: "multiply",   /* screen would lift pure black */
+  saturation: 100, grayscale: 0,
+  blurType: "off", blurAmount: 35, blurAngle: 0, directionalBothSides: false,
+  tiltFocus: 35, tiltPosition: 50, tiltFeather: 15,
+  lensFocus: 40, blurCenterX: 50, blurCenterY: 50,
+  progressivePosition: 55, progressiveReverse: false,
+  pfx: {
+    vignette:  { enabled: true,  intensity: 38 },
+    scanLines: { enabled: false, intensity: 40 },
+    chromatic: { enabled: false, intensity: 15 },
+    bloom:     { enabled: true,  intensity: 25 },
+    filmGrain: { enabled: true,  intensity: 10 },
+    glitch:    { enabled: false, intensity: 20 },
+    pixelate:  { enabled: false, intensity: 15 },
+    halftone:  { enabled: false, intensity: 20 },
+    filmDust:  { enabled: false, intensity: 20 }
+  },
+  animated: true, animStyle: "shimmer",
+  animSpeed:     { enabled: true, intensity: 90 },
+  animIntensity: { enabled: true, intensity: 54 },
+  /* followLockup: x/y are offsets from the lockup centre in lockup-widths,
+     so the glow stays put when the window resizes. Plain normalized x/y otherwise. */
+  lights: { enabled: false, followLockup: true, points: [
+    { x: -0.10, y:  0.10, radius: 0.42, intensity: 16 },
+    { x:  0.34, y:  0.02, radius: 0.28, intensity: 9 }
+  ]},
+  mask: { enabled: false, tool:"freehand", brushSize:30, showOverlay:false, invert:false, dataUrl:null, shapes:[] },
+  /* not in the 21st.dev set — the lockup this build draws instead of a photo */
+  word: "addicted", tilt: -3,
+  pauseWhenIdle: true,   /* stop every calculation when the tab is hidden or unfocused */
+  marginX: 0.06,      /* lockup right edge, fraction of width */
+  marginY: 0.03,      /* reflection tail to bottom edge       */
+  maxDpr: 2,          /* render at device pixels: finer grid, crisp glyphs */
+  autoQuality: true,  /* drop resolution until frames fit the budget, then climb back */
+  targetMs: 24,       /* ~42fps. Higher = holds full resolution longer */
+  minScale: 0.75      /* never go coarser than this, however slow the machine */
+};
+
+const P = PARAMS;
+const Q = new URLSearchParams(location.search);
+const TAU = Math.PI * 2;
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+const mk = (w,h) => { const c = document.createElement("canvas"); c.width = Math.max(1,w|0); c.height = Math.max(1,h|0); return c; };
+
+/* deterministic per-cell noise — Math.random() would strobe every frame */
+function hash(x, y, z) {
+  let n = (x|0)*374761393 + (y|0)*668265263 + (z|0)*1274126177;
+  n = (n ^ (n >>> 13)) * 1274126177;
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+
+/* ---------- surfaces ---------- */
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d", { alpha: false });
+const hud = document.getElementById("hud");
+let W = 0, H = 0, cols = 0, rows = 0;
+let src, sctx, glyph, gctx, tmp, tctx, bloomC, bctx, small, smctx;
+let LUM = null, COL = null;
+
+const PIXEL_BUDGET = 2.4e6;   /* backing-store cap; past this the grid costs more than it shows */
+let renderScale = 1;          /* driven by the auto-quality loop below */
+function resize() {
+  let dpr = Math.min(P.maxDpr || 1, devicePixelRatio || 1) * renderScale;
+  const px = innerWidth * innerHeight * dpr * dpr;
+  if (px > PIXEL_BUDGET) dpr *= Math.sqrt(PIXEL_BUDGET / px);
+  W = Math.max(320, (innerWidth * dpr) | 0);
+  H = Math.max(240, (innerHeight * dpr) | 0);
+  cv.width = W; cv.height = H;
+  src = mk(W,H);  sctx = src.getContext("2d", { willReadFrequently: true });
+  glyph = mk(W,H); gctx = glyph.getContext("2d", { willReadFrequently: true });
+  tmp = mk(W,H);  tctx = tmp.getContext("2d", { willReadFrequently: true });
+  bloomC = mk(W >> 2, H >> 2); bctx = bloomC.getContext("2d");
+  cols = Math.ceil(W / P.cellSize); rows = Math.ceil(H / P.cellSize);
+  small = mk(cols, rows); smctx = small.getContext("2d", { willReadFrequently: true });
+  LUM = new Float32Array(cols * rows);
+  COL = new Uint8ClampedArray(cols * rows * 3);
+  atlases.clear();
+  lastAtlas = null; lastBucket = -1;
+  grp = null;
+}
+addEventListener("resize", resize);
+
+/* ---------- tone curve ---------- */
+let TONE = null;
+function buildTone() {
+  const pts = (P.toneCurve || []).slice().sort((a,b) => a.x - b.x);
+  const lut = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    let y = x;
+    if (pts.length >= 2) {
+      let j = 0;
+      while (j < pts.length - 2 && x > pts[j+1].x) j++;
+      const a = pts[j], b = pts[j+1];
+      // ponytail: piecewise linear, not monotone cubic. Swap in a spline if a curve editor ever lands.
+      const s = b.x === a.x ? 0 : (x - a.x) / (b.x - a.x);
+      y = a.y + (b.y - a.y) * clamp(s, 0, 1);
+    }
+    lut[i] = clamp(y, 0, 1);
+  }
+  return lut;
+}
+
+/* ---------- character ramps + glyph atlas ---------- */
+const RAMPS = {
+  standard: " .:-=+*#%@",
+  blocks:   " \u2591\u2592\u2593\u2588",
+  shades:   " .\u00b7:;+=xX$&@",
+  binary:   " 01",
+  dots:     " .\u00b7\u2022\u25cf",
+  hex:      "0123456789ABCDEF"
+};
+const HEX = RAMPS.hex;
+const MATRIX_CHARS = "\uff71\uff72\uff73\uff74\uff75\uff76\uff77\uff78\uff79\uff7a0123456789";
+const rampChars = () => (P.charSet === "custom" && P.customChars) ? P.customChars : (RAMPS[P.charSet] || RAMPS.standard);
+
+const atlases = new Map();
+function atlas(chars, size, r, g, b) {
+  const key = chars.length + "|" + chars[0] + chars[chars.length-1] + "|" + size + "|" + r + "," + g + "," + b;
+  let a = atlases.get(key);
+  if (a) return a;
+  const c = mk(size * chars.length, size), x = c.getContext("2d");
+  x.font = Math.round(size * 1.08) + 'px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+  x.textAlign = "center"; x.textBaseline = "middle";
+  x.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
+  for (let i = 0; i < chars.length; i++) x.fillText(chars[i], i * size + size / 2, size / 2 + size * 0.04);
+  a = { c, size, n: chars.length };
+  atlases.set(key, a);
+  return a;
+}
+/* colour is bucketed by *normalised* chroma, brightness rides on globalAlpha,
+   so a greyscale source only ever builds one atlas. The last bucket is memoised:
+   building the Map key string per cell costs more than the draw itself. */
+let lastBucket = -1, lastChars = null, lastSize = -1, lastAtlas = null;
+function glyphDraw(g, chars, idx, x, y, size, alpha, rgb) {
+  const m = Math.max(rgb[0], rgb[1], rgb[2]) || 1;
+  const qr = (rgb[0] / m * 3 + 0.5) | 0, qg = (rgb[1] / m * 3 + 0.5) | 0, qb = (rgb[2] / m * 3 + 0.5) | 0;
+  const bucket = (qr * 4 + qg) * 4 + qb;
+  let a = lastAtlas;
+  if (bucket !== lastBucket || chars !== lastChars || size !== lastSize) {
+    a = atlas(chars, size, (qr / 3 * 255) | 0, (qg / 3 * 255) | 0, (qb / 3 * 255) | 0);
+    lastBucket = bucket; lastChars = chars; lastSize = size; lastAtlas = a;
+  }
+  const i = idx < 0 ? 0 : idx >= a.n ? a.n - 1 : idx | 0;
+  g.globalAlpha = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+  g.drawImage(a.c, i * a.size, 0, a.size, a.size, x, y, size, size);
+}
+
+/* ============================================================
+   SOURCE — what gets ASCII-ified. Stands in for the photo/video.
+   ============================================================ */
+
+/* donut.c, shaded into a pixel buffer instead of a terminal.
+   Rendered at half size and upscaled: 4x cheaper and it fills the
+   sampling gaps for free. */
+let dbuf = null, dctx = null, DN = 0;
+function drawDonut(box, A, B) {
+  const n = Math.max(32, box >> 1);
+  if (!dbuf || DN !== n) { DN = n; dbuf = mk(n,n); dctx = dbuf.getContext("2d"); }
+  const img = dctx.createImageData(n, n), d = img.data;
+  const zb = new Float32Array(n * n);
+  const R1 = 1, R2 = 2, K2 = 5, K1 = n * K2 * 3 / (8 * (R1 + R2));
+  const cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(B), sB = Math.sin(B);
+  for (let th = 0; th < TAU; th += 0.04) {
+    const ct = Math.cos(th), st = Math.sin(th);
+    const cx = R2 + R1 * ct, cy = R1 * st;
+    for (let ph = 0; ph < TAU; ph += 0.016) {
+      const cp = Math.cos(ph), sp = Math.sin(ph);
+      const x = cx * (cB * cp + sA * sB * sp) - cy * cA * sB;
+      const y = cx * (sB * cp - sA * cB * sp) + cy * cA * cB;
+      const ooz = 1 / (K2 + cA * cx * sp + cy * sA);
+      const xp = (n / 2 + K1 * ooz * x) | 0;
+      const yp = (n / 2 - K1 * ooz * y) | 0;
+      if (xp < 0 || xp >= n || yp < 0 || yp >= n) continue;
+      const L = cp * ct * sB - cA * ct * sp - sA * st + cB * (cA * st - ct * sA * sp);
+      if (L <= 0) continue;
+      const i = yp * n + xp;
+      if (ooz > zb[i]) {
+        zb[i] = ooz;
+        const o = i * 4;
+        d[o] = d[o+1] = d[o+2] = 255;
+        d[o+3] = (Math.pow(L / 1.41421356, 0.7) * 255) | 0;
+      }
+    }
+  }
+  dctx.putImageData(img, 0, 0);
+  return dbuf;
+}
+
+let FONT_OK = false;
+(async () => {
+  try {
+    await document.fonts.load('64px "Instrument Serif"');
+    await document.fonts.ready;
+    FONT_OK = document.fonts.check('64px "Instrument Serif"');
+  } catch (e) { /* offline: the serif fallback still reads right */ }
+  grp = null;
+})();
+
+/* [donut] addicted, transparent background */
+let grp = null, gpx = null, GW = 0, GH = 0;
+const LOCK = { cx: 0.5, cy: 0.5, w: 1, h: 1 };
+const linksEl = document.getElementById("links");
+function buildGroup(t) {
+  const fs  = Math.round(Math.min(H * 0.165, W * 0.098));
+  const box = Math.round(fs * 1.45);
+  const gap = Math.round(fs * 0.28);
+  const font = fs + 'px ' + (FONT_OK ? '"Instrument Serif", ' : '') + 'Georgia, "Times New Roman", serif';
+  tctx.save();
+  tctx.font = font;
+  if ("letterSpacing" in tctx) tctx.letterSpacing = (fs * 0.012).toFixed(2) + "px";
+  const tw = Math.ceil(tctx.measureText(P.word).width);
+  tctx.restore();
+  const gw = box + gap + tw, gh = Math.max(box, Math.round(fs * 1.35));
+  if (!grp || GW !== gw || GH !== gh) { grp = mk(gw, gh); gpx = grp.getContext("2d"); GW = gw; GH = gh; }
+  gpx.setTransform(1,0,0,1,0,0);
+  gpx.globalAlpha = 1; gpx.globalCompositeOperation = "source-over"; gpx.filter = "none";
+  gpx.clearRect(0, 0, gw, gh);
+
+  const spin = (P.animSpeed.enabled ? P.animSpeed.intensity : 50) / 100;
+  gpx.imageSmoothingEnabled = true;
+  /* True donut.c tumble: both axes monotonic at donut.c's own 2:1 rate (A += 0.04,
+     B += 0.02). Goes edge-on twice a cycle, same as the original.
+     For a hole-forward nod instead: A = Math.PI / 2 + 0.9 * Math.sin(t * 0.55 * spin). */
+  const A = 1.2 + t * 0.95 * spin;   /* phase offset: t=0 is dead edge-on in donut.c */
+  gpx.drawImage(drawDonut(box, A, 0.6 + t * 0.48 * spin), 0, (gh - box) / 2, box, box);
+
+  gpx.font = font;
+  if ("letterSpacing" in gpx) gpx.letterSpacing = (fs * 0.012).toFixed(2) + "px";
+  gpx.textBaseline = "alphabetic";
+  gpx.fillStyle = "#fff";
+  gpx.strokeStyle = "#fff";
+  gpx.lineJoin = "round";
+  gpx.lineWidth = fs * 0.016;
+  gpx.fillText(P.word, box + gap, gh - fs * 0.10);
+  gpx.strokeText(P.word, box + gap, gh - fs * 0.10);
+  return grp;
+}
+
+/* flipped, faded copy for the floor */
+let refl = null, rfx = null;
+function reflection(g) {
+  if (!refl || refl.width !== GW || refl.height !== GH) { refl = mk(GW, GH); rfx = refl.getContext("2d"); }
+  rfx.setTransform(1,0,0,1,0,0);
+  rfx.globalCompositeOperation = "source-over";
+  rfx.clearRect(0, 0, GW, GH);
+  rfx.save(); rfx.translate(0, GH); rfx.scale(1, -1); rfx.drawImage(g, 0, 0); rfx.restore();
+  rfx.globalCompositeOperation = "destination-in";
+  const gr = rfx.createLinearGradient(0, 0, 0, GH);
+  gr.addColorStop(0,    "rgba(0,0,0,0.30)");
+  gr.addColorStop(0.40, "rgba(0,0,0,0.08)");
+  gr.addColorStop(1,    "rgba(0,0,0,0)");
+  rfx.fillStyle = gr; rfx.fillRect(0, 0, GW, GH);
+  rfx.globalCompositeOperation = "source-over";
+  return refl;
+}
+
+function drawSource(t) {
+  const s = sctx;
+  s.setTransform(1,0,0,1,0,0);
+  s.globalAlpha = 1; s.globalCompositeOperation = "source-over"; s.filter = "none";
+  s.fillStyle = "#000"; s.fillRect(0, 0, W, H);
+
+  const g = buildGroup(t);
+  const rc = reflection(g);
+  const gapY = Math.round(GH * 0.01), rh = GH * 0.78;
+  LOCK.cx = (W * (1 - P.marginX) - GW / 2) / W;
+  LOCK.cy = (H * (1 - P.marginY) - (GH / 2 + gapY + rh)) / H;
+  LOCK.w = GW / W; LOCK.h = GH / H;
+  s.save();
+  s.translate(LOCK.cx * W, LOCK.cy * H);
+  s.rotate(P.tilt * Math.PI / 180);
+  s.drawImage(g, -GW / 2, -GH / 2);
+
+  /* ground plane: foreshortened, blur ramping with distance from the contact line.
+     ponytail: 5 bands instead of a per-pixel gradient blur — invisible under the glyph grid. */
+  const bands = 5;
+  for (let i = 0; i < bands; i++) {
+    s.filter = "blur(" + (0.8 + i * 2.2).toFixed(1) + "px)";
+    s.drawImage(rc, 0, GH * i / bands, GW, GH / bands,
+                -GW / 2 * 1.03, GH / 2 + gapY + rh * i / bands, GW * 1.03, rh / bands + 1);
+  }
+  s.filter = "none";
+  s.restore();
+}
+
+/* ============================================================
+   COLOUR CHAIN — brightness, contrast, saturation, grayscale, tint
+   Applied to the sampled cell values; identical result to a
+   full-canvas pass, a few hundred times cheaper.
+   ============================================================ */
+const BLEND = {
+  "source-over": (a,b) => b,
+  "normal":      (a,b) => b,
+  "multiply":    (a,b) => a * b / 255,
+  "screen":      (a,b) => 255 - (255-a) * (255-b) / 255,
+  "overlay":     (a,b) => a < 128 ? 2*a*b/255 : 255 - 2*(255-a)*(255-b)/255,
+  "soft-light":  (a,b) => { const A=a/255, B=b/255; return 255 * (B < 0.5 ? A - (1-2*B)*A*(1-A) : A + (2*B-1)*((A<0.25 ? ((16*A-12)*A+4)*A : Math.sqrt(A)) - A)); },
+  "lighten":     (a,b) => Math.max(a,b),
+  "darken":      (a,b) => Math.min(a,b),
+  "difference":  (a,b) => Math.abs(a-b),
+  "color-dodge": (a,b) => b >= 255 ? 255 : Math.min(255, a*255/(255-b))
+};
+let TINT = [60,166,255];
+function parseTint(hex) {
+  const h = (hex || "#ffffff").replace("#","");
+  const v = h.length === 3 ? h.split("").map(c => c+c).join("") : h;
+  return [parseInt(v.slice(0,2),16)||0, parseInt(v.slice(2,4),16)||0, parseInt(v.slice(4,6),16)||0];
+}
+
+const out3 = [0,0,0];
+function adjust(r, g, b) {
+  const br = P.brightness / 100 * 128;
+  r += br; g += br; b += br;
+  const ct = P.contrast / 100;
+  r = (r-128)*ct + 128; g = (g-128)*ct + 128; b = (b-128)*ct + 128;
+  const l0 = 0.2126*r + 0.7152*g + 0.0722*b;
+  const sa = P.saturation / 100;
+  r = l0 + (r-l0)*sa; g = l0 + (g-l0)*sa; b = l0 + (b-l0)*sa;
+  const gs = P.grayscale / 100;
+  if (gs > 0) { const l1 = 0.2126*r + 0.7152*g + 0.0722*b; r += (l1-r)*gs; g += (l1-g)*gs; b += (l1-b)*gs; }
+  r = TONE[clamp(r,0,255)|0] * 255; g = TONE[clamp(g,0,255)|0] * 255; b = TONE[clamp(b,0,255)|0] * 255;
+  const to = P.tintOpacity / 100;
+  if (to > 0) {
+    const f = BLEND[P.overlayBlend] || BLEND["source-over"];
+    r += (clamp(f(r, TINT[0]),0,255) - r) * to;
+    g += (clamp(f(g, TINT[1]),0,255) - g) * to;
+    b += (clamp(f(b, TINT[2]),0,255) - b) * to;
+  }
+  out3[0] = clamp(r,0,255); out3[1] = clamp(g,0,255); out3[2] = clamp(b,0,255);
+  return out3;
+}
+
+/* animation modulates cell luminance, so the glyphs themselves
+   scintillate instead of the whole layer just pulsing */
+function animMod(cx, cy, t) {
+  if (!P.animated) return 0;
+  const amp = (P.animIntensity.enabled ? P.animIntensity.intensity : 0) / 100 * 0.55;
+  const sp  = (P.animSpeed.enabled ? P.animSpeed.intensity : 0) / 100 * 3;
+  if (amp === 0 || sp === 0) return 0;
+  const T = t * sp;
+  switch (P.animStyle) {
+    case "wave":    return amp * Math.sin(cx * 0.22 - T * 2);
+    case "pulse":   return amp * Math.sin(T * 2);
+    case "ripple": { const dx = cx - cols/2, dy = cy - rows/2; return amp * Math.sin(Math.sqrt(dx*dx+dy*dy) * 0.3 - T * 3); }
+    case "flicker": return amp * (hash(cx, cy, T * 8) - 0.5) * 2;
+    case "shimmer":
+    default:        return amp * (0.62 * Math.sin(cx * 0.3 + cy * 0.2 + T * 2.4) + 0.38 * (hash(cx, cy, T * 7) - 0.5) * 2);
+  }
+}
+
+/* ============================================================
+   CELL RENDERERS — 25 modes
+   ============================================================ */
+const BAYER = [0,8,2,10, 12,4,14,6, 3,11,1,9, 15,7,13,5];
+let BRAILLE = "";
+for (let i = 0; i < 256; i++) BRAILLE += String.fromCharCode(0x2800 + i);
+
+function poly(g, cx, cy, r, n, rot) {
+  g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const a = rot + i * TAU / n, px = cx + Math.cos(a)*r, py = cy + Math.sin(a)*r;
+    i ? g.lineTo(px, py) : g.moveTo(px, py);
+  }
+  g.closePath();
+}
+function star(g, cx, cy, r, n) {
+  g.beginPath();
+  for (let i = 0; i < n*2; i++) {
+    const a = -Math.PI/2 + i * Math.PI / n, rr = i % 2 ? r * 0.42 : r;
+    const px = cx + Math.cos(a)*rr, py = cy + Math.sin(a)*rr;
+    i ? g.lineTo(px, py) : g.moveTo(px, py);
+  }
+  g.closePath();
+}
+function heart(g, cx, cy, r) {
+  g.beginPath();
+  g.moveTo(cx, cy + r*0.75);
+  g.bezierCurveTo(cx - r*1.5, cy - r*0.3, cx - r*0.5, cy - r*1.1, cx, cy - r*0.35);
+  g.bezierCurveTo(cx + r*0.5, cy - r*1.1, cx + r*1.5, cy - r*0.3, cx, cy + r*0.75);
+  g.closePath();
+}
+const rgba = (c, a) => "rgba(" + (c[0]|0) + "," + (c[1]|0) + "," + (c[2]|0) + "," + clamp(a,0,1) + ")";
+
+let SRC = null;
+function pxLum(x, y) {
+  x = clamp(x|0, 0, W-1); y = clamp(y|0, 0, H-1);
+  if (!SRC) return gridLum((x / P.cellSize) | 0, (y / P.cellSize) | 0);
+  const o = (y*W + x) * 4;
+  return (0.2126*SRC[o] + 0.7152*SRC[o+1] + 0.0722*SRC[o+2]) / 255;
+}
+const gridLum = (cx, cy) => (cx < 0 || cy < 0 || cx >= cols || cy >= rows) ? 0 : LUM[cy*cols + cx];
+
+function drawCell(g, mode, x, y, s, L, c, cx, cy, t, la) {
+  if (la == null) la = L;
+  const mx = x + s/2, my = y + s/2;
+  const dm = 1 + P.density / 200;
+  const r = s * 0.5 * L * dm;
+  switch (mode) {
+    case "characters": { const ch = rampChars(); glyphDraw(g, ch, L * (ch.length - 0.001), x, y, s, Math.min(1, 0.2 + la), c); break; }
+    case "hexdump":    glyphDraw(g, HEX, L * 15.999, x, y, s, Math.min(1, la * 1.15), c); break;
+    case "braille": {
+      let m = 0;
+      const map = [0,3,1,4,2,5,6,7];
+      for (let sx = 0; sx < 2; sx++) for (let sy = 0; sy < 4; sy++)
+        if (pxLum(x + sx*s/2 + s/4, y + sy*s/4 + s/8) > 0.42) m |= 1 << map[sx*4+sy];
+      if (m) glyphDraw(g, BRAILLE, m, x, y, s, Math.min(1, 0.25 + la), c);
+      break;
+    }
+    case "matrix": {
+      const speed = 6 + hash(cx,0,3) * 10;
+      const head = (t * speed + hash(cx,0,5) * rows) % (rows + 18);
+      const d = head - cy;
+      if (d < 0 || d > 16) break;
+      const trail = 1 - d / 16;
+      const a = Math.min(1, (0.12 + L * 1.4) * trail * (d < 1 ? 2.2 : 1));
+      const gcol = d < 1 ? [190,255,205] : [40,235,105];
+      glyphDraw(g, MATRIX_CHARS, hash(cx, cy, (t*9)|0) * MATRIX_CHARS.length, x, y, s, a, gcol);
+      break;
+    }
+    case "dither":
+      if (L * 1.06 > (BAYER[(cy&3)*4 + (cx&3)] + 0.5) / 16) { g.globalAlpha = 1; g.fillStyle = rgba(c, 1); g.fillRect(x, y, s, s); }
+      break;
+    case "mosaic":  g.globalAlpha = 1; g.fillStyle = rgba(c, Math.min(1, la*1.2)); g.fillRect(x+0.5, y+0.5, s-1, s-1); break;
+    case "pixel":   g.globalAlpha = 1; g.fillStyle = rgba(c, Math.min(1, la*1.2)); g.fillRect(x, y, s, s); break;
+    case "halfblocks": {
+      const top = pxLum(mx, y + s*0.25), bot = pxLum(mx, y + s*0.75);
+      g.globalAlpha = 1;
+      g.fillStyle = rgba(c, Math.min(1, top*1.2)); g.fillRect(x, y, s, s/2);
+      g.fillStyle = rgba(c, Math.min(1, bot*1.2)); g.fillRect(x, y + s/2, s, s/2);
+      break;
+    }
+    case "dots":    g.globalAlpha = 1; g.fillStyle = rgba(c,1); g.beginPath(); g.arc(mx, my, Math.max(0.2,r), 0, TAU); g.fill(); break;
+    case "bubbles":
+      g.globalAlpha = 1; g.strokeStyle = rgba(c, 0.9); g.lineWidth = Math.max(0.6, s*0.08);
+      g.beginPath(); g.arc(mx, my, Math.max(0.4, r*0.95), 0, TAU); g.stroke();
+      if (L > 0.55) { g.fillStyle = rgba(c, 0.8); g.beginPath(); g.arc(mx - r*0.3, my - r*0.3, Math.max(0.2,r*0.16), 0, TAU); g.fill(); }
+      break;
+    case "rings":
+      g.globalAlpha = 1; g.strokeStyle = rgba(c,1); g.lineWidth = Math.max(0.5, s*0.28*L);
+      g.beginPath(); g.arc(mx, my, s*0.34, 0, TAU); g.stroke();
+      break;
+    case "disco": {
+      const hue = (cx*9 + cy*13 + t*90) % 360;
+      g.globalAlpha = 1; g.fillStyle = "hsl(" + hue + ",90%," + (28 + L*45) + "%)";
+      g.beginPath(); g.arc(mx, my, Math.max(0.2,r), 0, TAU); g.fill();
+      break;
+    }
+    case "cross":
+      g.globalAlpha = 1; g.strokeStyle = rgba(c,1); g.lineWidth = Math.max(0.5, s*0.16);
+      g.beginPath(); g.moveTo(mx-r, my); g.lineTo(mx+r, my); g.moveTo(mx, my-r); g.lineTo(mx, my+r); g.stroke();
+      break;
+    case "diamond": g.globalAlpha = 1; g.fillStyle = rgba(c,1); poly(g, mx, my, r*1.15, 4, 0); g.fill(); break;
+    case "lines":
+      g.globalAlpha = 1; g.fillStyle = rgba(c,1);
+      g.fillRect(x, my - Math.max(0.4, s*0.45*L)/2, s, Math.max(0.4, s*0.45*L));
+      break;
+    case "diagonal":
+      g.globalAlpha = 1; g.strokeStyle = rgba(c,1); g.lineWidth = Math.max(0.4, s*0.55*L);
+      g.beginPath(); g.moveTo(x, y+s); g.lineTo(x+s, y); g.stroke();
+      break;
+    case "hatch": {
+      const lv = Math.ceil(L * 3);
+      g.globalAlpha = 1; g.strokeStyle = rgba(c, 0.85); g.lineWidth = Math.max(0.4, s*0.09);
+      g.beginPath();
+      if (lv >= 1) { g.moveTo(x, y+s); g.lineTo(x+s, y); }
+      if (lv >= 2) { g.moveTo(x, y); g.lineTo(x+s, y+s); }
+      if (lv >= 3) { g.moveTo(x, y+s/2); g.lineTo(x+s, y+s/2); }
+      g.stroke();
+      break;
+    }
+    case "contour": {
+      const q = v => Math.floor(v * 7.99);
+      const me = q(L);
+      g.globalAlpha = 1; g.strokeStyle = rgba(c, 0.95); g.lineWidth = Math.max(0.5, s*0.13);
+      g.beginPath();
+      if (me !== q(gridLum(cx+1, cy))) { g.moveTo(x+s, y); g.lineTo(x+s, y+s); }
+      if (me !== q(gridLum(cx, cy+1))) { g.moveTo(x, y+s); g.lineTo(x+s, y+s); }
+      g.stroke();
+      break;
+    }
+    case "voxel": {
+      const h = s * 0.55 * L, w = s * 0.5;
+      g.globalAlpha = 1;
+      g.fillStyle = rgba(c, 1);    g.beginPath(); g.moveTo(mx, my-h-w*0.5); g.lineTo(mx+w, my-h); g.lineTo(mx, my-h+w*0.5); g.lineTo(mx-w, my-h); g.closePath(); g.fill();
+      g.fillStyle = rgba(c, 0.62); g.beginPath(); g.moveTo(mx-w, my-h); g.lineTo(mx, my-h+w*0.5); g.lineTo(mx, my+w*0.5); g.lineTo(mx-w, my); g.closePath(); g.fill();
+      g.fillStyle = rgba(c, 0.38); g.beginPath(); g.moveTo(mx+w, my-h); g.lineTo(mx, my-h+w*0.5); g.lineTo(mx, my+w*0.5); g.lineTo(mx+w, my); g.closePath(); g.fill();
+      break;
+    }
+    case "lego":
+      g.globalAlpha = 1;
+      g.fillStyle = rgba(c, Math.min(1, L*1.15)); g.fillRect(x+0.5, y+0.5, s-1, s-1);
+      g.fillStyle = rgba(c, Math.min(1, L*0.86));
+      g.beginPath(); g.arc(mx, my, s*0.24, 0, TAU); g.fill();
+      break;
+    case "triangles": {
+      const up = hash(cx, cy, 2) > 0.5;
+      g.globalAlpha = 1; g.fillStyle = rgba(c, Math.min(1, L*1.2));
+      g.beginPath();
+      if (up) { g.moveTo(x, y+s); g.lineTo(x+s, y+s); g.lineTo(x, y); }
+      else    { g.moveTo(x+s, y); g.lineTo(x+s, y+s); g.lineTo(x, y); }
+      g.closePath(); g.fill();
+      break;
+    }
+    case "hexagons":
+      g.globalAlpha = 1; g.fillStyle = rgba(c,1);
+      poly(g, mx + (cy & 1 ? s/2 : 0), my, Math.max(0.3, s*0.6*L), 6, Math.PI/6); g.fill();
+      break;
+    case "hearts":  g.globalAlpha = 1; g.fillStyle = rgba(c,1); heart(g, mx, my, Math.max(0.3, r*0.95)); g.fill(); break;
+    case "stars":   g.globalAlpha = 1; g.fillStyle = rgba(c,1); star(g, mx, my, Math.max(0.3, r*1.1), 5); g.fill(); break;
+    case "mixed": {
+      const pick = ["dots","mosaic","cross","characters","diamond"][(hash(cx, cy, 4) * 5) | 0];
+      drawCell(g, pick, x, y, s, L, c, cx, cy, t, la);
+      break;
+    }
+    default: glyphDraw(g, HEX, L * 15.999, x, y, s, Math.min(1, la * 1.15), c);
+  }
+}
+
+/* ---------- sample the source grid, then draw every cell ---------- */
+/* modes that need finer-than-a-cell detail read the source at full resolution */
+const SUBCELL = { braille: 1, halfblocks: 1 };
+
+function renderCells(t) {
+  const cs = P.cellSize, g = gctx;
+  /* the per-cell average is a downscale — the GPU box-filters ~1M pixels far
+     faster than a JS sampling loop, and only cols*rows pixels come back */
+  smctx.setTransform(1,0,0,1,0,0);
+  smctx.globalAlpha = 1; smctx.globalCompositeOperation = "copy"; smctx.filter = "none";
+  smctx.imageSmoothingEnabled = true;
+  smctx.imageSmoothingQuality = "low";
+  smctx.drawImage(src, 0, 0, cols, rows);
+  const avg = smctx.getImageData(0, 0, cols, rows).data;
+  SRC = SUBCELL[P.renderMode] ? sctx.getImageData(0, 0, W, H).data : null;
+
+  g.setTransform(1,0,0,1,0,0);
+  g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.clearRect(0, 0, W, H);
+
+  const bl = adjust(0, 0, 0);
+  const blR = bl[0], blG = bl[1], blB = bl[2];
+  const blL = (0.2126*blR + 0.7152*blG + 0.0722*blB) / 255;
+  for (let i = 0, o = 0; i < cols * rows; i++, o += 4) {
+    if (avg[o] === 0 && avg[o+1] === 0 && avg[o+2] === 0) {
+      LUM[i] = blL; COL[i*3] = blR; COL[i*3+1] = blG; COL[i*3+2] = blB;
+      continue;
+    }
+    const c = adjust(avg[o], avg[o+1], avg[o+2]);
+    LUM[i] = (0.2126*c[0] + 0.7152*c[1] + 0.0722*c[2]) / 255;
+    COL[i*3] = c[0]; COL[i*3+1] = c[1]; COL[i*3+2] = c[2];
+  }
+
+  const cell = [0,0,0];
+  const thr = Math.max(0, 0.012 - P.density / 100 * 0.012);
+  const ee = P.edgeEmphasis / 100;
+  for (let ry = 0; ry < rows; ry++) {
+    for (let rx = 0; rx < cols; rx++) {
+      if (P.coverage < 100 && hash(rx, ry, 7) * 100 > P.coverage) continue;
+      const i = ry * cols + rx;
+      let L = LUM[i];
+      if (L < 0.004) {                       /* pure background: sparse speckle or nothing */
+        const hb = hash(rx, ry, (t * 6) | 0);
+        if (hb < 0.972) continue;
+        cell[0] = cell[1] = cell[2] = 255;
+        const f = 0.018 + 1.1 * (hb - 0.972);
+        drawCell(g, P.renderMode, rx*cs, ry*cs, cs, hash(rx, ry, 11), cell, rx, ry, t, f);
+        continue;
+      }
+      if (ee > 0) {
+        const e = Math.abs(L - gridLum(rx+1,ry)) + Math.abs(L - gridLum(rx-1,ry))
+                + Math.abs(L - gridLum(rx,ry+1)) + Math.abs(L - gridLum(rx,ry-1));
+        L = clamp(L + e * ee * 1.5, 0, 1);
+      }
+      /* multiplicative, so black stays black; the tiny additive term is the faint
+         speckle of digits visible across the dark parts of the reference */
+      const m = animMod(rx, ry, t);
+      const h = hash(rx, ry, (t * 6) | 0);
+      const h4 = h * h * h * h;
+      const floor = 0.012 * h4 * h4;
+      let la = L * (1 + m * 0.3) + floor;   /* brightness: barely moves */
+      L = L * (1 + m) + floor;              /* digit value: swings freely */
+      if (P.invert) { L = 1 - L; la = 1 - la; }
+      if (la < thr) continue;
+      L = clamp(L, 0, 1); la = clamp(la, 0, 1);
+      cell[0] = COL[i*3]; cell[1] = COL[i*3+1]; cell[2] = COL[i*3+2];
+      if (cell[0] + cell[1] + cell[2] < 12) { cell[0] = cell[1] = cell[2] = 255; }
+      drawCell(g, P.renderMode, rx*cs, ry*cs, cs, L, cell, rx, ry, t, la);
+    }
+  }
+  g.globalAlpha = 1;
+}
+
+/* ============================================================
+   BLUR — applied to the glyph layer on its way to the screen.
+   All band-based; ctx.filter does the actual gaussian.
+   ============================================================ */
+function drawBlurred(dst, layer) {
+  const type = P.blurType, amt = P.blurAmount / 100 * 24;
+  if (type === "off" || amt <= 0) { dst.filter = "none"; dst.drawImage(layer, 0, 0); return; }
+  const bands = 6;
+  if (type === "gaussian") {
+    dst.filter = "blur(" + amt.toFixed(1) + "px)";
+    dst.drawImage(layer, 0, 0);
+  } else if (type === "directional") {
+    const a = P.blurAngle * Math.PI / 180, steps = 10;
+    const from = P.directionalBothSides ? -steps : 0;
+    let n = 0;
+    for (let i = from; i <= steps; i++) n++;
+    dst.filter = "none";
+    dst.globalAlpha = 1 / n;
+    for (let i = from; i <= steps; i++) dst.drawImage(layer, Math.cos(a)*amt*i/steps, Math.sin(a)*amt*i/steps);
+    dst.globalAlpha = 1;
+  } else if (type === "tilt") {
+    const cy = P.tiltPosition / 100 * H, focus = P.tiltFocus / 100 * H / 2, feather = Math.max(1, P.tiltFeather / 100 * H / 2);
+    for (let i = 0; i < H; i += 8) {
+      const d = Math.abs(i + 4 - cy);
+      const k = clamp((d - focus) / feather, 0, 1);
+      dst.filter = k > 0.01 ? "blur(" + (k * amt).toFixed(1) + "px)" : "none";
+      dst.drawImage(layer, 0, i, W, 8, 0, i, W, 8);
+    }
+  } else if (type === "lens") {
+    const cx = P.blurCenterX / 100 * W, cy = P.blurCenterY / 100 * H;
+    const focus = P.lensFocus / 100 * Math.max(W, H) / 2;
+    const maxR = Math.hypot(W, H) / 2;
+    for (let i = bands - 1; i >= 0; i--) {
+      const r0 = focus + (maxR - focus) * i / bands;
+      const k = i / bands;
+      dst.save();
+      dst.beginPath(); dst.arc(cx, cy, Math.max(1, r0 + (maxR - focus) / bands), 0, TAU);
+      if (i < bands - 1) { dst.arc(cx, cy, Math.max(1, r0), 0, TAU, true); }
+      dst.clip();
+      dst.filter = k > 0.01 ? "blur(" + (k * amt).toFixed(1) + "px)" : "none";
+      dst.drawImage(layer, 0, 0);
+      dst.restore();
+    }
+  } else if (type === "progressive") {
+    const p = P.progressivePosition / 100;
+    for (let i = 0; i < H; i += 8) {
+      let k = (i / H - p) / Math.max(0.05, 1 - p);
+      if (P.progressiveReverse) k = -k;
+      k = clamp(k, 0, 1);
+      dst.filter = k > 0.01 ? "blur(" + (k * amt).toFixed(1) + "px)" : "none";
+      dst.drawImage(layer, 0, i, W, 8, 0, i, W, 8);
+    }
+  } else {
+    dst.filter = "none"; dst.drawImage(layer, 0, 0);
+  }
+  dst.filter = "none";
+}
+
+/* ---------- lights ---------- */
+function lightsPass() {
+  if (!P.lights.enabled) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  const fl = P.lights.followLockup;
+  for (const pt of P.lights.points) {
+    const x = fl ? (LOCK.cx + (pt.x || 0) * LOCK.w) * W : (pt.x || 0) * W;
+    const y = fl ? (LOCK.cy + (pt.y || 0) * LOCK.h) * H : (pt.y || 0) * H;
+    const r = Math.max(1, (pt.radius || 0.2) * (fl ? LOCK.w * W : Math.max(W, H)));
+    const a = clamp((pt.intensity == null ? 50 : pt.intensity) / 100, 0, 1);
+    const gr = ctx.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, "rgba(255,255,255," + (a * 0.6) + ")");
+    gr.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = gr; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  ctx.restore();
+}
+
+/* ---------- mask: reveal back to the plain source ---------- */
+let maskImg = null, maskUrl = null;
+function maskPass() {
+  const m = P.mask;
+  if (!m.enabled || !m.dataUrl) return;
+  if (maskUrl !== m.dataUrl) { maskUrl = m.dataUrl; maskImg = new Image(); maskImg.src = m.dataUrl; return; }
+  if (!maskImg || !maskImg.complete || !maskImg.naturalWidth) return;
+  ctx.save();
+  ctx.globalCompositeOperation = m.invert ? "destination-in" : "destination-out";
+  ctx.drawImage(maskImg, 0, 0, W, H);
+  ctx.globalCompositeOperation = "destination-over";
+  ctx.drawImage(src, 0, 0);
+  ctx.restore();
+}
+
+/* ============================================================
+   POST-EFFECTS — applied in pfx key order, gated on enabled
+   ============================================================ */
+let grainTile = null;
+function noiseTile() {
+  if (grainTile) return grainTile;
+  const n = 256, c = mk(n, n), x = c.getContext("2d");
+  const img = x.createImageData(n, n), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = (Math.random() * 255) | 0;
+    d[i] = d[i+1] = d[i+2] = v; d[i+3] = 255;
+  }
+  x.putImageData(img, 0, 0);
+  return (grainTile = c);
+}
+function shiftChannels(dx) {
+  const img = ctx.getImageData(0, 0, W, H), d = img.data, o = new Uint8ClampedArray(d);
+  const k = Math.round(dx);
+  for (let y = 0; y < H; y++) {
+    const row = y * W;
+    for (let x = 0; x < W; x++) {
+      const i = (row + x) * 4;
+      const xr = clamp(x - k, 0, W-1), xb = clamp(x + k, 0, W-1);
+      d[i]   = o[(row + xr) * 4];
+      d[i+2] = o[(row + xb) * 4 + 2];
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+const PFX = {
+  scanLines(I) {
+    ctx.save(); ctx.fillStyle = "rgba(0,0,0," + (0.42 * I) + ")";
+    for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1.5);
+    ctx.restore();
+  },
+  vignette(I) {
+    const gr = ctx.createRadialGradient(W/2, H/2, Math.min(W,H) * 0.22, W/2, H/2, Math.hypot(W,H) * 0.62);
+    gr.addColorStop(0, "rgba(0,0,0,0)");
+    gr.addColorStop(0.6, "rgba(0,0,0," + (0.35 * I) + ")");
+    gr.addColorStop(1, "rgba(0,0,0," + Math.min(1, 1.15 * I) + ")");
+    ctx.save(); ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H); ctx.restore();
+  },
+  bloom(I) {
+    const bw = bloomC.width, bh = bloomC.height;
+    bctx.setTransform(1,0,0,1,0,0);
+    bctx.globalCompositeOperation = "source-over";
+    bctx.filter = "none";
+    bctx.clearRect(0, 0, bw, bh);
+    bctx.drawImage(cv, 0, 0, bw, bh);
+    bctx.filter = "blur(" + (1.5 + 5 * I).toFixed(1) + "px)";
+    bctx.drawImage(bloomC, 0, 0);
+    bctx.filter = "none";
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = clamp(1.5 * I, 0, 1);
+    ctx.drawImage(bloomC, 0, 0, W, H);
+    ctx.restore();
+  },
+  chromatic(I) { shiftChannels(1 + I * 7); },
+  filmGrain(I) {
+    const n = noiseTile();
+    ctx.save();
+    ctx.globalCompositeOperation = "overlay";
+    ctx.globalAlpha = 0.35 * I;
+    const ox = -((Math.random() * 256) | 0), oy = -((Math.random() * 256) | 0);
+    for (let y = oy; y < H; y += 256) for (let x = ox; x < W; x += 256) ctx.drawImage(n, x, y);
+    ctx.restore();
+  },
+  glitch(I) {
+    const slices = Math.round(2 + I * 12);
+    tctx.setTransform(1,0,0,1,0,0); tctx.globalAlpha = 1; tctx.filter = "none";
+    tctx.clearRect(0, 0, W, H); tctx.drawImage(cv, 0, 0);
+    for (let i = 0; i < slices; i++) {
+      const y = (Math.random() * H) | 0;
+      const h = 2 + ((Math.random() * 24 * I) | 0);
+      const dx = ((Math.random() - 0.5) * 90 * I) | 0;
+      ctx.clearRect(0, y, W, h);
+      ctx.drawImage(tmp, 0, y, W, h, dx, y, W, h);
+    }
+    if (I > 0.3) shiftChannels(I * 5);
+  },
+  halftone(I) {
+    const step = Math.max(3, Math.round(4 + I * 8));
+    const img = ctx.getImageData(0, 0, W, H).data;
+    tctx.setTransform(1,0,0,1,0,0); tctx.globalAlpha = 1; tctx.filter = "none";
+    tctx.clearRect(0, 0, W, H);
+    tctx.fillStyle = "#000"; tctx.fillRect(0, 0, W, H);
+    tctx.fillStyle = "#fff";
+    for (let y = step/2; y < H; y += step) {
+      for (let x = step/2; x < W; x += step) {
+        const o = (((y|0) * W) + (x|0)) * 4;
+        const l = (0.2126*img[o] + 0.7152*img[o+1] + 0.0722*img[o+2]) / 255;
+        if (l < 0.01) continue;
+        tctx.beginPath(); tctx.arc(x, y, Math.sqrt(l) * step * 0.62, 0, TAU); tctx.fill();
+      }
+    }
+    ctx.save(); ctx.globalAlpha = I; ctx.drawImage(tmp, 0, 0); ctx.restore();
+  },
+  pixelate(I) {
+    const f = Math.max(2, Math.round(2 + I * 18));
+    const w = Math.max(1, (W / f) | 0), h = Math.max(1, (H / f) | 0);
+    tctx.setTransform(1,0,0,1,0,0); tctx.globalAlpha = 1; tctx.filter = "none";
+    tctx.clearRect(0, 0, W, H);
+    tctx.imageSmoothingEnabled = true;
+    tctx.drawImage(cv, 0, 0, w, h);
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(tmp, 0, 0, w, h, 0, 0, W, H);
+    ctx.restore();
+  },
+  filmDust(I) {
+    const n = Math.round(I * 90);
+    ctx.save();
+    for (let i = 0; i < n; i++) {
+      const x = Math.random() * W, y = Math.random() * H;
+      ctx.fillStyle = Math.random() > 0.35 ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.55)";
+      if (Math.random() > 0.82) ctx.fillRect(x, y, 1, 4 + Math.random() * 22);
+      else ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
+    }
+    ctx.restore();
+  }
+};
+const PFX_ORDER = ["scanLines","vignette","bloom","chromatic","filmGrain","glitch","halftone","pixelate","filmDust"];
+function postfx() {
+  for (const k of PFX_ORDER) {
+    const cfg = P.pfx[k];
+    if (!cfg || !cfg.enabled) continue;
+    const I = clamp((cfg.intensity == null ? 50 : cfg.intensity) / 100, 0, 1);
+    if (I <= 0) continue;
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
+    PFX[k](I);
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
+}
+
+/* ============================================================
+   COMPOSE + LOOP
+   ============================================================ */
+function compose() {
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+
+  const bo = clamp(P.bgOpacity / 100, 0, 1);
+  if (P.bgMode === "solid")      { ctx.globalAlpha = bo; ctx.fillStyle = "#060607"; ctx.fillRect(0, 0, W, H); }
+  else if (P.bgMode === "photo") { ctx.globalAlpha = bo; ctx.drawImage(src, 0, 0); }
+  else if (P.bgMode === "blur")  {
+    /* quarter-res: a 40px gaussian over a full 2MP canvas costs ~10x the whole frame */
+    const bw = bloomC.width, bh = bloomC.height;
+    bctx.setTransform(1,0,0,1,0,0);
+    bctx.globalAlpha = 1; bctx.globalCompositeOperation = "copy"; bctx.filter = "none";
+    bctx.drawImage(src, 0, 0, bw, bh);
+    bctx.globalCompositeOperation = "source-over";
+    bctx.filter = "blur(" + (P.bgBlur / 4).toFixed(1) + "px)";
+    bctx.drawImage(bloomC, 0, 0);
+    bctx.filter = "none";
+    ctx.globalAlpha = bo; ctx.drawImage(bloomC, 0, 0, W, H);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.globalCompositeOperation = P.styleBlend || "source-over";
+  drawBlurred(ctx, glyph);
+  ctx.globalCompositeOperation = "source-over";
+
+  lightsPass();
+  maskPass();
+  postfx();
+}
+
+function frame(t) {
+  drawSource(t);
+  renderCells(t);
+  compose();
+}
+
+let t0 = performance.now(), acc = 0, fcount = 0;
+
+/* ---------- auto quality ----------
+   Cell count scales with the backing store, so the same page is trivial on a
+   small window and brutal on a big HiDPI one. Measure the real frame cost and
+   walk the render scale until it fits, with a dead band so it cannot oscillate. */
+let emaMs = 0, sinceAdjust = 0;
+function autoQuality(dt) {
+  if (!P.autoQuality) return;
+  emaMs = emaMs ? emaMs * 0.9 + dt * 0.1 : dt;
+  if (++sinceAdjust < 60) return;
+  const hi = P.targetMs * 1.35, lo = P.targetMs * 0.6;
+  const floor = P.minScale || 0.5;
+  if (emaMs > hi && renderScale > floor)    renderScale = Math.max(floor, renderScale * 0.9);
+  else if (emaMs < lo && renderScale < 1)   renderScale = Math.min(1, renderScale * 1.10);
+  else return;
+  resize();
+  sinceAdjust = 0; emaMs = 0;
+}
+
+/* ---------- idle shutdown ----------
+   Hidden or unfocused: the loop stops rescheduling, so nothing runs at all —
+   no donut, no sampling, no draws. t0 absorbs the paused span so the tumble
+   picks up where it left off instead of jumping. */
+let paused = false, pausedAt = 0;
+const idle = () => document.hidden || !document.hasFocus();
+function setPaused(p) {
+  if (!P.pauseWhenIdle || p === paused) return;
+  paused = p;
+  if (p) {
+    pausedAt = performance.now();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
+    ctx.fillStyle = "rgba(0,0,0,0.62)";          /* one draw, then silence */
+    ctx.fillRect(0, 0, W, H);
+    linksEl.classList.add("idle");
+    stopFlicker();
+  } else {
+    linksEl.classList.remove("idle");
+    startFlicker();
+    t0 += performance.now() - pausedAt;
+    requestAnimationFrame(loop);
+  }
+}
+document.addEventListener("visibilitychange", () => setPaused(idle()));
+addEventListener("blur",  () => setPaused(true));
+addEventListener("focus", () => setPaused(false));
+
+function loop(now) {
+  if (paused) return;
+  const t = (now - t0) / 1000;
+  const a = performance.now();
+  frame(t);
+  const dt = performance.now() - a;
+  autoQuality(dt);
+  if (SHOW_FPS) {
+    acc += dt;
+    if (++fcount >= 20) {
+      hud.textContent = (acc / fcount).toFixed(1) + " ms/frame  " + cols + "x" + rows +
+                        " cells  scale " + renderScale.toFixed(2);
+      acc = 0; fcount = 0;
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   SELF-TEST — ?selftest
+   ============================================================ */
+const ALL_MODES = ["characters","dither","mosaic","pixel","dots","cross","diamond","voxel","lego","mixed",
+  "lines","diagonal","braille","disco","hexdump","matrix","rings","hearts","stars","hexagons",
+  "triangles","bubbles","hatch","contour","halfblocks"];
+const ALL_BLUR = ["off","gaussian","directional","tilt","lens","progressive"];
+const ALL_ANIM = ["wave","pulse","shimmer","ripple","flicker"];
+
+function selftest() {
+  let pass = 0, fail = 0;
+  const ok = (c, m) => { if (c) pass++; else { fail++; console.error("FAIL:", m); } };
+
+  const lut = buildTone();
+  let mono = true;
+  for (let i = 1; i < 256; i++) if (lut[i] < lut[i-1] - 1e-6) mono = false;
+  ok(mono, "tone LUT monotonic");
+  ok(lut[0] >= 0 && lut[255] <= 1, "tone LUT in [0,1]");
+
+  for (const L of [0, 0.5, 1, 1.0000001]) ok((L * 15.999 | 0) < 16 && (L * 15.999 | 0) >= 0, "hex glyph index at L=" + L);
+  ok(BRAILLE.length === 256, "braille atlas covers all 256 patterns");
+
+  /* donut must never project outside its buffer over a full rotation */
+  const n = 64, R1 = 1, R2 = 2, K2 = 5, K1 = n * K2 * 3 / (8 * (R1 + R2));
+  let oob = 0, hits = 0;
+  for (let A = 0; A < TAU; A += 0.4) for (let B = 0; B < TAU; B += 0.4) {
+    const cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(B), sB = Math.sin(B);
+    for (let th = 0; th < TAU; th += 0.3) for (let ph = 0; ph < TAU; ph += 0.3) {
+      const ct = Math.cos(th), st = Math.sin(th), cp = Math.cos(ph), sp = Math.sin(ph);
+      const cx = R2 + R1*ct, cy = R1*st;
+      const z = K2 + cA*cx*sp + cy*sA;
+      if (z <= 0) { oob++; continue; }
+      const ooz = 1/z;
+      const xp = (n/2 + K1*ooz*(cx*(cB*cp + sA*sB*sp) - cy*cA*sB)) | 0;
+      const yp = (n/2 - K1*ooz*(cx*(sB*cp - sA*cB*sp) + cy*cA*cB)) | 0;
+      hits++;
+      if (xp < 0 || xp >= n || yp < 0 || yp >= n) oob++;
+    }
+  }
+  ok(oob === 0 && hits > 0, "donut projects inside the buffer (" + oob + " strays of " + hits + ")");
+
+  const save = JSON.parse(JSON.stringify({ renderMode: P.renderMode, blurType: P.blurType, animStyle: P.animStyle, pfx: P.pfx }));
+  const inked = () => {
+    const d = gctx.getImageData(0, 0, W, H).data;
+    for (let i = 3; i < d.length; i += 400) if (d[i] > 0) return true;
+    return false;
+  };
+  for (const m of ALL_MODES) {
+    P.renderMode = m;
+    try { frame(1.7); ok(inked(), "mode " + m + " draws ink"); }
+    catch (e) { ok(false, "mode " + m + " threw: " + e.message); }
+  }
+  P.renderMode = save.renderMode;
+  for (const b of ALL_BLUR) {
+    P.blurType = b;
+    try { frame(1.7); pass++; } catch (e) { ok(false, "blur " + b + " threw: " + e.message); }
+  }
+  P.blurType = save.blurType;
+  for (const a of ALL_ANIM) {
+    P.animStyle = a;
+    try { frame(1.7); pass++; } catch (e) { ok(false, "anim " + a + " threw: " + e.message); }
+  }
+  P.animStyle = save.animStyle;
+  for (const k of PFX_ORDER) {
+    for (const kk of PFX_ORDER) P.pfx[kk].enabled = (kk === k);
+    try { frame(1.7); pass++; } catch (e) { ok(false, "pfx " + k + " threw: " + e.message); }
+  }
+  P.pfx = save.pfx;
+
+  console.log((fail ? "%cSELFTEST FAIL" : "%cSELFTEST PASS") + " — " + pass + " passed, " + fail + " failed",
+              "font-weight:bold;color:" + (fail ? "#f55" : "#5f5"));
+  return { pass, fail };
+}
+
+/* ---------- link labels ----------
+   Each character is its own span so it can scintillate into a hex digit, the
+   same trick the glyph field plays. Hover fires a short decode burst, then the
+   word locks so it stays readable while you aim at it. */
+const HEXD = "0123456789ABCDEF";
+function setLabel(el, text) {
+  el.textContent = "";
+  for (const ch of text) {
+    const sp = document.createElement("span");
+    sp.className = "ch";
+    sp.dataset.ch = ch;
+    sp.textContent = ch;
+    el.appendChild(sp);
+  }
+}
+linksEl.querySelectorAll(".copy").forEach(el => {
+  el.dataset.label = el.textContent.trim();
+  setLabel(el, el.dataset.label);
+  el._burst = 0;
+  el.addEventListener("mouseenter", () => { el._burst = 5; });
+  el.addEventListener("click", () => {
+    if (navigator.clipboard) navigator.clipboard.writeText(el.dataset.copy).catch(() => {});
+    setLabel(el, "copied!");
+    clearTimeout(el._t);
+    el._t = setTimeout(() => setLabel(el, el.dataset.label), 1000);
+  });
+});
+
+let flicker = null;
+function flickerTick() {
+  for (const el of linksEl.querySelectorAll(".copy")) {
+    const hot = el.matches(":hover");
+    const p = el._burst > 0 ? 0.55 : hot ? 0 : 0.018;
+    if (el._burst > 0) el._burst--;
+    for (const sp of el.children)
+      sp.textContent = Math.random() < p ? HEXD[(Math.random() * 16) | 0] : sp.dataset.ch;
+  }
+}
+const startFlicker = () => { if (!flicker) flicker = setInterval(flickerTick, 110); };
+const stopFlicker  = () => { clearInterval(flicker); flicker = null; };
+
+/* ---------- boot ---------- */
+linksEl.classList.add("on");
+startFlicker();
+const SHOW_FPS = Q.has("fps");
+if (SHOW_FPS) hud.style.display = "block";
+TINT = parseTint(P.tint);
+TONE = buildTone();
+resize();
+if (Q.has("selftest")) { frame(0); selftest(); }
+if (P.pauseWhenIdle && idle()) { frame(0); setPaused(true); stopFlicker(); }   /* loaded in the background */
+else requestAnimationFrame(loop);
+</script>
+</body>
+</html>
