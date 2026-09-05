@@ -11,8 +11,8 @@ No build step, no dependencies. Open `index.html`.
 
 | Flag | Effect |
 |---|---|
-| `?fps` | Frame time, grid size and live render scale in the corner |
-| `?selftest` | Assert sweep over every render mode, blur type, anim style and post-effect. Logs `PASS`/`FAIL` to the console |
+| `?fps` | Frame time, grid size, cell pitch and live render scale in the corner |
+| `?selftest` | Assert sweep over every render mode, blur type, anim style and post-effect, plus the grid-pitch law across window sizes. Logs `PASS`/`FAIL` to the console |
 
 ## How it works
 
@@ -29,8 +29,9 @@ Everything lives in the `PARAMS` object at the top of `index.html`.
 | Key | Notes |
 |---|---|
 | `renderMode` | 25 of them — `hexdump`, `characters`, `braille`, `matrix`, `contour`, `halfblocks`, … |
-| `cellSize` | Grid pitch in device pixels. Smaller = finer, quadratically more work |
-| `maxDpr` | Render at device pixels for crisp glyphs. Capped by `PIXEL_BUDGET` |
+| `cellSize` | Grid pitch in device pixels at `cellRef`. Smaller = finer, quadratically more work |
+| `cellRef` / `cellMin` / `cellBudget` | The pitch follows the lockup so a small window keeps as many cells inside each letter as a big one, floored at what a hex digit can draw and capped in total cells |
+| `maxDpr` / `pixelBudget` | Render at device pixels for crisp glyphs, up to a backing-store cap |
 | `autoQuality` / `targetMs` / `minScale` | Measures real frame cost, walks the render scale to fit, never past the floor |
 | `pauseWhenIdle` | Hidden or unfocused: the loop stops rescheduling, nothing runs at all |
 | `marginX` / `marginY` / `tilt` | Lockup placement and lean |

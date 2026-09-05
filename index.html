@@ -49,6 +49,14 @@ const PARAMS = {
   renderMode: "hexdump",
   bgMode: "blur", bgBlur: 40, bgOpacity: 13,
   cellSize: 6, coverage: 100, invert: false, styleBlend: "source-over",   /* was 8 — finer grid */
+  /* Legibility is decided by how many cells fall inside each letter, so the pitch
+     follows the lockup: cellSize is the pitch at cellRef, and a window that draws
+     the lockup half that size gets half the pitch. cellMin is the hard floor — a
+     hex digit under ~4 device px is a smudge, not a glyph — and cellBudget is the
+     ceiling on what the finer grid may cost, in cells. */
+  cellMin: 4, cellBudget: 90000,   /* only a sliver of a window ever reaches this; a normal
+                                      one lands under the 57,600 cells cellRef draws */
+  cellRef: { w: 1920, h: 1080 },   /* backing store the pitch is calibrated for */
   charSet: "standard", customChars: "",
   brightness: 12, contrast: 115, edgeEmphasis: 25, density: 0,
   toneCurve: [{x:0,y:0},{x:0.35,y:0.20},{x:0.75,y:0.88},{x:1,y:1}],
@@ -85,6 +93,7 @@ const PARAMS = {
   marginX: 0.06,      /* lockup right edge, fraction of width */
   marginY: 0.03,      /* reflection tail to bottom edge       */
   maxDpr: 2,          /* render at device pixels: finer grid, crisp glyphs */
+  pixelBudget: 2.4e6, /* backing-store cap; past this the grid costs more than it shows */
   autoQuality: true,  /* drop resolution until frames fit the budget, then climb back */
   targetMs: 24,       /* ~42fps. Higher = holds full resolution longer */
   minScale: 0.75      /* never go coarser than this, however slow the machine */
@@ -107,24 +116,53 @@ function hash(x, y, z) {
 const cv = document.getElementById("c");
 const ctx = cv.getContext("2d", { alpha: false });
 const hud = document.getElementById("hud");
-let W = 0, H = 0, cols = 0, rows = 0;
+let W = 0, H = 0, cols = 0, rows = 0, cellPx = 6;   /* cellPx: the live grid pitch, see cellPitchFor */
 let src, sctx, glyph, gctx, tmp, tctx, bloomC, bctx, small, smctx;
 let LUM = null, COL = null;
 
-const PIXEL_BUDGET = 2.4e6;   /* backing-store cap; past this the grid costs more than it shows */
 let renderScale = 1;          /* driven by the auto-quality loop below */
+
+/* type size of the lockup on a given backing store — the tilt, the floor and the
+   grid pitch all key off it (declared, not assigned: cellPitchFor runs at boot) */
+function lockupFs(w, h) { return Math.round(Math.min(h * 0.165, w * 0.098)); }
+
+/* backing store for a viewport, before the grid is laid over it */
+function backing(vw, vh, dpr, scale) {
+  let d = Math.min(P.maxDpr || 1, dpr || 1) * scale;
+  const px = vw * vh * d * d;
+  if (px > P.pixelBudget) d *= Math.sqrt(P.pixelBudget / px);
+  return { w: Math.max(320, (vw * d) | 0), h: Math.max(240, (vh * d) | 0) };
+}
+
+/* Grid pitch. Every text size is a fraction of the viewport while the pitch was
+   fixed, so on a small window the letters shrank and the grid did not: the cells
+   per letter — the whole of legibility here — collapsed. Scale the pitch with the
+   lockup instead and that ratio holds, so the piece reads the same at 800x600 as
+   at 1920x1080. Clamped at both ends: never finer than a hex digit can draw, never
+   coarser than cellSize, so a big window keeps exactly the grid it has today.
+   Measured at renderScale 1, so auto-quality still buys back real work. */
+function cellPitchFor(vw, vh, dpr) {
+  const b = backing(vw, vh, dpr, 1);
+  let pitch = clamp(Math.round(P.cellSize * lockupFs(b.w, b.h) / lockupFs(P.cellRef.w, P.cellRef.h)),
+                    P.cellMin, P.cellSize);
+  /* A window can be shaped so the lockup is tiny on a large canvas — a tall sliver,
+     an ultra-wide letterbox. Legibility asks for a fine pitch there and the cell
+     count would run away with it, so cellBudget caps the grid whatever the shape. */
+  while (pitch < P.cellSize && Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch) > P.cellBudget) pitch++;
+  return pitch;
+}
+const cellPitch = () => cellPitchFor(innerWidth, innerHeight, devicePixelRatio || 1);
+
 function resize() {
-  let dpr = Math.min(P.maxDpr || 1, devicePixelRatio || 1) * renderScale;
-  const px = innerWidth * innerHeight * dpr * dpr;
-  if (px > PIXEL_BUDGET) dpr *= Math.sqrt(PIXEL_BUDGET / px);
-  W = Math.max(320, (innerWidth * dpr) | 0);
-  H = Math.max(240, (innerHeight * dpr) | 0);
+  const b = backing(innerWidth, innerHeight, devicePixelRatio || 1, renderScale);
+  W = b.w; H = b.h;
+  cellPx = cellPitch();
   cv.width = W; cv.height = H;
   src = mk(W,H);  sctx = src.getContext("2d", { willReadFrequently: true });
   glyph = mk(W,H); gctx = glyph.getContext("2d", { willReadFrequently: true });
   tmp = mk(W,H);  tctx = tmp.getContext("2d", { willReadFrequently: true });
   bloomC = mk(W >> 2, H >> 2); bctx = bloomC.getContext("2d");
-  cols = Math.ceil(W / P.cellSize); rows = Math.ceil(H / P.cellSize);
+  cols = Math.ceil(W / cellPx); rows = Math.ceil(H / cellPx);
   small = mk(cols, rows); smctx = small.getContext("2d", { willReadFrequently: true });
   LUM = new Float32Array(cols * rows);
   COL = new Uint8ClampedArray(cols * rows * 3);
@@ -268,7 +306,7 @@ let grp = null, gpx = null, GW = 0, GH = 0;
 const LOCK = { cx: 0.5, cy: 0.5, w: 1, h: 1 };
 const linksEl = document.getElementById("links");
 function buildGroup(t) {
-  const fs  = Math.round(Math.min(H * 0.165, W * 0.098));
+  const fs  = lockupFs(W, H);
   const box = Math.round(fs * 1.45);
   const gap = Math.round(fs * 0.28);
   const font = fs + 'px ' + (FONT_OK ? '"Instrument Serif", ' : '') + 'Georgia, "Times New Roman", serif';
@@ -451,7 +489,7 @@ const rgba = (c, a) => "rgba(" + (c[0]|0) + "," + (c[1]|0) + "," + (c[2]|0) + ",
 let SRC = null;
 function pxLum(x, y) {
   x = clamp(x|0, 0, W-1); y = clamp(y|0, 0, H-1);
-  if (!SRC) return gridLum((x / P.cellSize) | 0, (y / P.cellSize) | 0);
+  if (!SRC) return gridLum((x / cellPx) | 0, (y / cellPx) | 0);
   const o = (y*W + x) * 4;
   return (0.2126*SRC[o] + 0.7152*SRC[o+1] + 0.0722*SRC[o+2]) / 255;
 }
@@ -588,7 +626,7 @@ function drawCell(g, mode, x, y, s, L, c, cx, cy, t, la) {
 const SUBCELL = { braille: 1, halfblocks: 1 };
 
 function renderCells(t) {
-  const cs = P.cellSize, g = gctx;
+  const cs = cellPx, g = gctx;
   /* the per-cell average is a downscale — the GPU box-filters ~1M pixels far
      faster than a JS sampling loop, and only cols*rows pixels come back */
   smctx.setTransform(1,0,0,1,0,0);
@@ -984,7 +1022,7 @@ function loop(now) {
     acc += dt;
     if (++fcount >= 20) {
       hud.textContent = (acc / fcount).toFixed(1) + " ms/frame  " + cols + "x" + rows +
-                        " cells  scale " + renderScale.toFixed(2);
+                        " cells @" + cellPx + "px  scale " + renderScale.toFixed(2);
       acc = 0; fcount = 0;
     }
   }
@@ -1032,10 +1070,94 @@ function selftest() {
   }
   ok(oob === 0 && hits > 0, "donut projects inside the buffer (" + oob + " strays of " + hits + ")");
 
+  /* ---- legibility: how many cells carry each letter, at every window size ----
+     The whole piece is glyphs on a grid, so a letter is readable exactly when
+     enough cells fall inside it. Floor is 6 x-height cells: measured when the
+     contact line was sized, ~3.5 was unreadable mush and ~6 read cleanly.
+     Asserted against the real font metrics and the real pitch law, not a copy. */
+  const XCELL_FLOOR = 6;
+  const MIN_AREA = 800 * 600;              /* smallest window the piece is built for */
+  const SIZES = [[3440,1440],[2560,1440],[1920,1200],[1920,1080],[1680,1050],[1600,900],
+                 [1440,900],[1366,768],[1280,1024],[1280,800],[1280,720],[1152,864],
+                 [1024,768],[1024,600],[960,540],[800,600],[720,1280],[640,480]];
+  const xHeight = (() => {                 /* x-height of the wordmark face, per em */
+    tctx.save();
+    tctx.font = '200px ' + (FONT_OK ? '"Instrument Serif", ' : '') + 'Georgia, "Times New Roman", serif';
+    const m = tctx.measureText("x");
+    tctx.restore();
+    return (m.actualBoundingBoxAscent || 104) / 200;
+  })();
+  ok(xHeight > 0.2 && xHeight < 0.9, "wordmark x-height measured sanely (" + xHeight.toFixed(3) + " em)");
+
+  const xcells = (b, pitch) => lockupFs(b.w, b.h) * xHeight / pitch;
+  for (const [vw, vh] of SIZES) {
+    for (const dpr of [1, 2]) {
+      const at = vw + "x" + vh + "@" + dpr + "x";
+      const pitch = cellPitchFor(vw, vh, dpr);
+      ok(pitch === (pitch | 0) && pitch >= P.cellMin && pitch <= P.cellSize,
+         "pitch " + pitch + " is a whole number inside [cellMin,cellSize] at " + at);
+      const b = backing(vw, vh, dpr, 1);
+      const x = xcells(b, pitch);
+      ok(x >= XCELL_FLOOR, "wordmark keeps " + XCELL_FLOOR + " x-cells at " + at + " (" + x.toFixed(1) + ")");
+      /* auto-quality is allowed to coarsen the grid, but not past legibility.
+         Only over the range the piece targets: at 640x480 with renderScale also
+         down at minScale the wordmark reaches ~5.4 x-cells, and no pitch saves it
+         — cellMin is already the smallest a hex digit draws at. */
+      if (vw * vh >= MIN_AREA) {
+        const worst = xcells(backing(vw, vh, dpr, P.minScale), pitch);
+        ok(worst >= XCELL_FLOOR, "wordmark survives minScale at " + at + " (" + worst.toFixed(1) + ")");
+      }
+      const cells = Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch);
+      ok(cells <= P.cellBudget, "grid stays inside cellBudget at " + at +
+         " (" + cells + " vs " + P.cellBudget + ")");
+    }
+  }
+  /* Every window, not just the table: the pitch law has to hold across the whole
+     space, and the two properties that matter are cheap to check exhaustively. */
+  {
+    let minX = null, maxCells = 0, maxFixed = 0;
+    for (let vw = 640; vw <= 3840; vw += 32) {
+      for (let vh = 480; vh <= 2160; vh += 32) {
+        for (const dpr of [1, 2]) {
+          const b = backing(vw, vh, dpr, 1), pitch = cellPitchFor(vw, vh, dpr);
+          const cells = Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch);
+          if (cells > maxCells) maxCells = cells;
+          maxFixed = Math.max(maxFixed, Math.ceil(b.w / P.cellSize) * Math.ceil(b.h / P.cellSize));
+          const x = xcells(b, pitch);
+          if (!minX || x < minX.x) minX = { x, at: vw + "x" + vh + "@" + dpr + "x" };
+        }
+      }
+    }
+    ok(minX.x >= XCELL_FLOOR, "every window from 640x480 up, any shape, clears " + XCELL_FLOOR +
+       " x-cells (worst " + minX.x.toFixed(1) + " at " + minX.at + ")");
+    /* cellBudget is the whole cost contract, so hold it over the whole space —
+       and note what a fixed pitch peaks at, for the record in the failure text */
+    ok(maxCells <= P.cellBudget, "grid never exceeds cellBudget (" + maxCells + " vs " +
+       P.cellBudget + "; a fixed pitch peaks at " + maxFixed + ")");
+  }
+
+  /* a big window must keep the grid it has today — the fix is for the small end */
+  for (const [vw, vh] of [[1920,1080],[2560,1440],[3440,1440],[1920,1200]])
+    ok(cellPitchFor(vw, vh, 1) === P.cellSize, "pitch untouched at " + vw + "x" + vh);
+  /* Dragging a window bigger must never hand back a finer grid: at a fixed shape
+     the pitch only ever rises. (Across shapes it does not — a tall sliver gets a
+     coarser pitch than its area suggests, which is cellBudget doing its job.) */
+  for (const [aw, ah] of [[16,9],[16,10],[4,3],[3,4],[21,9],[9,16]]) {
+    let mono = true, prev = 0, worst = "";
+    for (let k = 60; k <= 240; k += 4) {
+      const p2 = cellPitchFor(aw * k, ah * k, 1);
+      if (p2 < prev) { mono = false; worst = aw + ":" + ah + " at " + (aw*k) + "x" + (ah*k); }
+      prev = p2;
+    }
+    ok(mono, "pitch never coarsens as a " + aw + ":" + ah + " window grows" + (worst ? " (" + worst + ")" : ""));
+  }
+
   const save = JSON.parse(JSON.stringify({ renderMode: P.renderMode, blurType: P.blurType, animStyle: P.animStyle, pfx: P.pfx }));
+  /* every pixel, not every hundredth: matrix draws a thin moving band over the
+     speckle cells only, and a strided sampler misses it as the grid gets finer */
   const inked = () => {
     const d = gctx.getImageData(0, 0, W, H).data;
-    for (let i = 3; i < d.length; i += 400) if (d[i] > 0) return true;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
     return false;
   };
   for (const m of ALL_MODES) {
