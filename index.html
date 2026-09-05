@@ -93,6 +93,8 @@ const PARAMS = {
   pixelBudget: 9e6,   /* backing-store cap; past this the grid costs more than it shows */
   autoQuality: true,  /* drop resolution until frames fit the budget, then climb back */
   targetMs: 24,       /* ~42fps. Higher = holds full resolution longer */
+  warmupMs: 800,      /* ignore the first frames: font, atlases and JIT are settling */
+  sampleMs: 800,      /* then watch real frame intervals this long, and decide once */
   minScale: 0.75      /* never go coarser than this, however slow the machine */
 };
 
@@ -118,6 +120,11 @@ let src, sctx, glyph, gctx, tmp, tctx, bloomC, bctx, small, smctx;
 let LUM = null, COL = null;
 
 let renderScale = 1;          /* driven by the auto-quality loop below */
+let lastFrameAt = 0, qSamples = [], qElapsed = 0, qDone = false;
+const Q_MIN_SAMPLES = 5;      /* so a very slow machine still gets a median */
+
+/* the viewport changed: measure this one too, and allow it its one correction */
+function requality() { qDone = false; qSamples.length = 0; qElapsed = 0; lastFrameAt = 0; }
 
 /* type size of the lockup on a given backing store — the tilt, the floor and the
    grid pitch all key off it (declared, not assigned: cellPitchFor runs at boot) */
@@ -168,13 +175,13 @@ function resize() {
   grp = null;
   watchDpr();
 }
-addEventListener("resize", resize);
+addEventListener("resize", () => { requality(); resize(); });
 
 /* Dragging the window to a monitor with different scaling changes
    devicePixelRatio without reliably firing "resize", which leaves the canvas
    rendering at the old density — it looks soft until you nudge the window. */
 let dprQuery = null;
-function onDprChange() { resize(); }
+function onDprChange() { requality(); resize(); }
 function watchDpr() {
   if (dprQuery) dprQuery.removeEventListener("change", onDprChange);
   dprQuery = matchMedia("(resolution: " + (devicePixelRatio || 1) + "dppx)");
@@ -1082,24 +1089,45 @@ function frame(t) {
   compose();
 }
 
-let t0 = performance.now(), acc = 0, fcount = 0;
+let t0 = performance.now(), acc = 0, wall = 0, fcount = 0;
 
 /* ---------- auto quality ----------
-   Cell count scales with the backing store, so the same page is trivial on a
-   small window and brutal on a big HiDPI one. Measure the real frame cost and
-   walk the render scale until it fits, with a dead band so it cannot oscillate. */
-let emaMs = 0, sinceAdjust = 0;
-function autoQuality(dt) {
-  if (!P.autoQuality) return;
-  emaMs = emaMs ? emaMs * 0.9 + dt * 0.1 : dt;
-  if (++sinceAdjust < 60) return;
-  const hi = P.targetMs * 1.35, lo = P.targetMs * 0.6;
-  const floor = P.minScale || 0.5;
-  if (emaMs > hi && renderScale > floor)    renderScale = Math.max(floor, renderScale * 0.9);
-  else if (emaMs < lo && renderScale < 1)   renderScale = Math.min(1, renderScale * 1.10);
-  else return;
-  resize();
-  sinceAdjust = 0; emaMs = 0;
+   Cell count scales with the backing store, so the same page is trivial on a small
+   window and brutal on a big HiDPI one. Watch what the machine actually does with
+   it, then pick the render scale — once.
+
+   Three things this has to get right, and the version before it got all three
+   wrong:
+
+   - Judge on the real frame interval. Script time around frame() cannot see the
+     GPU work, which is deferred and surfaces at a later sync point; it reads
+     around half the truth, so a regulator fed on it holds a resolution the
+     machine cannot sustain.
+   - Wait by the clock, not by a frame count. A warm-up of 60 frames takes 60
+     times a frame — twelve seconds at 5fps — on exactly the machines that need
+     the correction most.
+   - Correct once. Every renderScale change re-tiles the whole mosaic, which
+     reads as the art jumping, so a regulator that keeps trimming keeps jumping.
+     One measurement, one decision, then it is done until the window changes.
+
+   And do not "guard" against slow samples: on a heavy window they are the
+   signal. Only a lone stall is discounted, by taking the median rather than the
+   mean, which needs no threshold to get wrong. */
+function autoQuality(gap) {
+  if (!P.autoQuality || qDone || !gap) return;
+  qElapsed += gap;
+  if (qElapsed < P.warmupMs) return;     /* the font, the atlases and the JIT settle first */
+  qSamples.push(gap);
+  if (qElapsed < P.warmupMs + P.sampleMs || qSamples.length < Q_MIN_SAMPLES) return;
+  qDone = true;                          /* one decision, whatever it says */
+  qSamples.sort((a, b) => a - b);
+  const med = qSamples[qSamples.length >> 1];
+  /* Cost tracks the backing store, which is area, so the scale that lands on
+     targetMs is sqrt(target/measured). Part of a frame is fixed cost that no
+     scale removes, so this asks for slightly more than it needs; minScale bounds
+     how far that can go, and the self-test holds the piece legible there. */
+  const want = clamp(Math.sqrt(P.targetMs / med), P.minScale || 0.5, 1);
+  if (want < 0.995) { renderScale = want; resize(); }
 }
 
 /* ---------- idle shutdown ----------
@@ -1121,6 +1149,7 @@ function setPaused(p) {
   } else {
     startFlicker();
     t0 += performance.now() - pausedAt;
+    lastFrameAt = 0;                             /* the paused span is not a frame */
     requestAnimationFrame(loop);
   }
 }
@@ -1133,14 +1162,19 @@ function loop(now) {
   const t = (now - t0) / 1000;
   const a = performance.now();
   frame(t);
-  const dt = performance.now() - a;
-  autoQuality(dt);
+  const script = performance.now() - a;
+  /* the rAF timestamp is wall clock, and the only honest measure of a frame */
+  const gap = lastFrameAt ? now - lastFrameAt : 0;
+  lastFrameAt = now;
+  autoQuality(gap);
   if (SHOW_FPS) {
-    acc += dt;
+    acc += script; wall += gap;
     if (++fcount >= 20) {
-      hud.textContent = (acc / fcount).toFixed(1) + " ms/frame  " + cols + "x" + rows +
+      const ms = wall / fcount;
+      hud.textContent = ms.toFixed(1) + " ms/frame  " + (1000 / ms).toFixed(0) + " fps  " +
+                        (acc / fcount).toFixed(1) + " ms script  " + cols + "x" + rows +
                         " cells @" + cellPx + "px  scale " + renderScale.toFixed(2);
-      acc = 0; fcount = 0;
+      acc = 0; wall = 0; fcount = 0;
     }
   }
   requestAnimationFrame(loop);
@@ -1274,6 +1308,60 @@ function selftest() {
       prev = p2;
     }
     ok(mono, "pitch never coarsens as a " + aw + ":" + ah + " window grows" + (worst ? " (" + worst + ")" : ""));
+  }
+
+  /* ---- auto-quality decides once, on the clock, from real intervals ----
+     Two bugs hid in the version before this: a warm-up counted in frames, which
+     took a minute on the slow machines it exists for, and a regulator that kept
+     trimming, re-tiling the whole mosaic every time. Drive it with synthetic
+     frame intervals and hold it to: never during warm-up, at most once ever,
+     never on a lone stall, and always for a genuinely slow stream. */
+  {
+    const saveScale = renderScale, saveAuto = P.autoQuality;
+    P.autoQuality = true;
+    /* run `ms` of clock at `gap` intervals; `stall` injects one long frame */
+    const drive = (gap, ms, stall) => {
+      requality();
+      renderScale = 1;
+      let elapsed = 0, corrections = 0, at = -1, was = 1, n = 0;
+      while (elapsed < ms) {
+        const g = (stall && n === stall.after) ? stall.ms : gap;
+        elapsed += g; n++;
+        autoQuality(g);
+        if (renderScale !== was) { corrections++; at = elapsed; was = renderScale; }
+      }
+      return { corrections, at, scale: renderScale, frames: n };
+    };
+
+    const fast = drive(8, 8000);                        /* 125fps, target 24 */
+    ok(fast.corrections === 0 && fast.scale === 1, "a machine that keeps up is left alone");
+
+    const slow = drive(50, 8000);                       /* 20fps */
+    ok(slow.corrections === 1, "a slow machine is corrected exactly once (" + slow.corrections + ")");
+    ok(slow.scale < 1 && slow.scale >= P.minScale, "the correction lands inside minScale (" + slow.scale.toFixed(2) + ")");
+    ok(slow.at >= P.warmupMs && slow.at <= P.warmupMs + P.sampleMs + 4 * 50,
+       "it waits out the warm-up before deciding (" + slow.at + "ms)");
+
+    /* the frame-counted warm-up bug: at 5fps, 60 frames is twelve seconds */
+    const crawl = drive(200, 30000);
+    ok(crawl.corrections === 1, "a crawling machine is corrected once (" + crawl.corrections + ")");
+    ok(crawl.at <= 4000, "and within seconds, not frames (" + crawl.at + "ms, " +
+       Math.round(crawl.at / 200) + " frames)");
+
+    /* the stall-guard bug, from both sides */
+    const blip = drive(8, 8000, { after: 140, ms: 2000 });
+    ok(blip.corrections === 0, "one stalled frame does not re-tile the mosaic");
+    const heavy = drive(150, 12000);                    /* every frame over 100ms */
+    ok(heavy.corrections === 1 && heavy.scale === P.minScale,
+       "frames past any stall threshold are the signal, not outliers (" + heavy.scale.toFixed(2) + ")");
+
+    /* and a window change re-arms it, because the cost changed with the window */
+    requality();
+    ok(!qDone && qSamples.length === 0, "a viewport change re-arms the one correction");
+
+    P.autoQuality = saveAuto;
+    renderScale = saveScale;
+    resize();
   }
 
   /* ---- background stars fade on their own phases ----
