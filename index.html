@@ -11,30 +11,20 @@
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
   canvas{display:block;width:100vw;height:100vh}
   #hud{position:fixed;left:10px;top:8px;color:#5f8;font:11px ui-monospace,Consolas,monospace;opacity:.7;display:none}
-  /* buttons ported from addicted.md, monochrome to match the glyph field */
-  #links{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:5px;color:#8c8c8c;
-         font:clamp(13px,1.35vw,18px) ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-         letter-spacing:.06em;user-select:none;white-space:nowrap;
-         opacity:0;transition:opacity .5s ease}
-  #links.on{opacity:1}
-  #links.idle{opacity:.28}
-  #links .copy{cursor:pointer;padding:5px 7px;color:#c8c8c8;
-               text-shadow:0 0 8px rgba(255,255,255,.24);
-               transition:color .18s ease,text-shadow .18s ease}
-  #links .copy:hover{color:#fff;text-decoration:underline;text-shadow:0 0 11px rgba(255,255,255,.85)}
-  #links .sep{opacity:.4}
-  #links .ch{display:inline-block;min-width:.62em;text-align:center}
+  /* The contact line is drawn into the source canvas so it becomes glyphs like
+     everything else — these are just its click targets, placed from the same
+     layout and invisible. Nothing here decides where the words appear. */
+  #links{position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;
+         color:transparent;user-select:none;white-space:nowrap}
+  #links .copy{position:absolute;pointer-events:auto;cursor:pointer}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud"></div>
 <div id="links">
-  [
   <span class="copy" data-copy="superphoenix26">discord</span>
-  <span class="sep">|</span>
   <span class="copy" data-copy="addicted@ewho.re">mail</span>
-  ]
 </div>
 <script>
 "use strict";
@@ -54,8 +44,8 @@ const PARAMS = {
      the lockup half that size gets half the pitch. cellMin is the hard floor — a
      hex digit under ~4 device px is a smudge, not a glyph — and cellBudget is the
      ceiling on what the finer grid may cost, in cells. */
-  cellMin: 4, cellBudget: 90000,   /* only a sliver of a window ever reaches this; a normal
-                                      one lands under the 57,600 cells cellRef draws */
+  cellMin: 4, cellBudget: 90000,   /* caps the grid only where the pitch goes finer than
+                                      cellSize; at cellSize pixelBudget governs the cost */
   cellRef: { w: 1920, h: 1080 },   /* backing store the pitch is calibrated for */
   charSet: "standard", customChars: "",
   brightness: 12, contrast: 115, edgeEmphasis: 25, density: 0,
@@ -89,11 +79,18 @@ const PARAMS = {
   mask: { enabled: false, tool:"freehand", brushSize:30, showOverlay:false, invert:false, dataUrl:null, shapes:[] },
   /* not in the 21st.dev set — the lockup this build draws instead of a photo */
   word: "addicted", tilt: -3,
+  /* The contact line is measured in cells, not pixels: linkSize is its x-height in
+     cells, the unit legibility is actually made of here. Sizing it to fit whatever
+     width was left over is what made it illegible on a small window. minXCells is
+     the floor the self-test holds every piece of text to — below about 6 cells of
+     x-height, glyph text stops being readable and becomes mush. */
+  linkSize: 7, minXCells: 6,
+  linkRoom: 0.5,      /* wider than this fraction of the window and it stacks instead */
   pauseWhenIdle: true,   /* stop every calculation when the tab is hidden or unfocused */
   marginX: 0.06,      /* lockup right edge, fraction of width */
   marginY: 0.03,      /* reflection tail to bottom edge       */
   maxDpr: 2,          /* render at device pixels: finer grid, crisp glyphs */
-  pixelBudget: 2.4e6, /* backing-store cap; past this the grid costs more than it shows */
+  pixelBudget: 9e6,   /* backing-store cap; past this the grid costs more than it shows */
   autoQuality: true,  /* drop resolution until frames fit the budget, then climb back */
   targetMs: 24,       /* ~42fps. Higher = holds full resolution longer */
   minScale: 0.75      /* never go coarser than this, however slow the machine */
@@ -304,7 +301,6 @@ let FONT_OK = false;
 /* [donut] addicted, transparent background */
 let grp = null, gpx = null, GW = 0, GH = 0;
 const LOCK = { cx: 0.5, cy: 0.5, w: 1, h: 1 };
-const linksEl = document.getElementById("links");
 function buildGroup(t) {
   const fs  = lockupFs(W, H);
   const box = Math.round(fs * 1.45);
@@ -339,6 +335,113 @@ function buildGroup(t) {
   gpx.fillText(P.word, box + gap, gh - fs * 0.10);
   gpx.strokeText(P.word, box + gap, gh - fs * 0.10);
   return grp;
+}
+
+/* ---------- contact line ----------
+   Drawn into the source like the lockup, so it becomes glyphs too. Sized from the
+   grid rather than from the width left beside the lockup: linkSize is an x-height
+   in cells, so the line reads the same on every window instead of being squeezed
+   under reading size by whatever room happened to be left. It gets its own row,
+   and when the row will not fit it stacks rather than shrinking. */
+const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+let MONO_XH = 0.55, MONO_ADV = 0.6;      /* measured off the real face at boot */
+function monoMetrics() {
+  tctx.save();
+  tctx.font = "100px " + MONO;
+  const m = tctx.measureText("x"), a = tctx.measureText("0").width;
+  tctx.restore();
+  if (m.actualBoundingBoxAscent > 0) MONO_XH = m.actualBoundingBoxAscent / 100;
+  if (a > 0) MONO_ADV = a / 100;
+}
+
+const linkEls = [].slice.call(document.getElementById("links").querySelectorAll(".copy"));
+const COPIED = "copied!";
+/* one row of tokens, single-spaced: "[ discord | mail ]" or, stacked, "[ mail ]" */
+const rowChars = r => r.reduce((n, t) => n + t.length, 0) + r.length - 1;
+
+/* Type size for the line, and whether it stacks. The size comes from the grid and
+   is not negotiable; the layout is what gives. Past linkRoom of the window the line
+   would out-shout the lockup, so it goes to two rows instead of thinning down.
+   Widths are checked against the labels at their longest — a click swaps in a
+   longer word for a second — so the line never resizes under the reader. */
+function linkFit(w, pitch, labels) {
+  let fs = Math.max(4, Math.ceil(pitch * P.linkSize / MONO_XH));
+  const wide = labels.map(l => "x".repeat(Math.max(l.length, COPIED.length)));
+  const row = (ls, join) => join ? rowChars(["[", ls[0], "|", ls[1], "]"])
+                                 : Math.max.apply(null, ls.map(l => rowChars(["[", l, "]"])));
+  const stacked = row(labels, true) * fs * MONO_ADV > w * P.linkRoom;
+  /* last resort: even stacked it overruns the margins, so it does shrink — a window
+     this narrow has no reading size left to protect */
+  const n = row(wide, !stacked);
+  const hard = w * (1 - 2 * P.marginX);
+  if (n * fs * MONO_ADV > hard) fs = Math.max(4, Math.floor(hard / (n * MONO_ADV)));
+  return { fs, stacked };
+}
+
+const LINKS = { segs: [], fs: 16, sig: "" };
+function layoutLinks(lockTop) {
+  const label = el => el._text || "";
+  const fit = linkFit(W, cellPx, linkEls.map(el => el.dataset.label || ""));
+  const fs = fit.fs, adv = fs * MONO_ADV, lh = Math.round(fs * 1.6);
+  const lines = fit.stacked
+    ? linkEls.map(el => [["["], [label(el), el], ["]"]])
+    : [[["["], [label(linkEls[0]), linkEls[0]], ["|"], [label(linkEls[1]), linkEls[1]], ["]"]]];
+
+  /* Its own row, where it has always sat — the middle of the window — but never
+     inside the lockup: a bigger line lifts clear of it instead of overlapping. */
+  const blockH = lines.length * lh;
+  let cy = H / 2;
+  const gap = fs * 0.9;
+  if (cy + blockH / 2 + gap > lockTop) cy = lockTop - gap - blockH / 2;
+  const top = cy - blockH / 2;
+
+  const segs = [];
+  let sig = W + "," + H + "," + fs;
+  lines.forEach((line, li) => {
+    const n = rowChars(line.map(t => t[0]));
+    let x = Math.round((W - n * adv) / 2);
+    const base = Math.round(top + li * lh + lh / 2 + fs * MONO_XH / 2);
+    for (const t of line) {
+      segs.push({ x, y: base, text: t[0], el: t[1] || null, w: t[0].length * adv });
+      if (t[1]) sig += "|" + Math.round(x) + "," + base + "," + t[0].length;
+      x += (t[0].length + 1) * adv;
+    }
+  });
+  LINKS.segs = segs; LINKS.fs = fs;
+  if (sig !== LINKS.sig) { LINKS.sig = sig; placeLinkTargets(); }
+}
+
+/* the click targets, straight off the layout above: same rects, so they cannot
+   drift from the glyphs and leave the page looking right with dead links */
+function placeLinkTargets() {
+  const k = innerWidth / W, pad = LINKS.fs * 0.35, xh = LINKS.fs * MONO_XH;
+  for (const seg of LINKS.segs) {
+    if (!seg.el) continue;
+    const st = seg.el.style;
+    st.left   = ((seg.x - pad) * k).toFixed(1) + "px";
+    st.top    = ((seg.y - xh - pad) * k).toFixed(1) + "px";
+    st.width  = ((seg.w + pad * 2) * k).toFixed(1) + "px";
+    st.height = ((xh + pad * 2) * k).toFixed(1) + "px";
+  }
+}
+
+function drawLinks(s, t) {
+  if (!LINKS.segs.length) return;
+  s.save();
+  s.font = LINKS.fs + "px " + MONO;
+  s.textAlign = "left"; s.textBaseline = "alphabetic";
+  const fade = clamp(t / 0.5, 0, 1);             /* the fade-in the CSS used to do */
+  for (const seg of LINKS.segs) {
+    const hot = seg.el && seg.el._hot;
+    /* the brackets and the bar sit back on colour alone — dimming them as well
+       drops them under the ink threshold in half the render modes */
+    s.globalAlpha = fade;
+    s.fillStyle = hot ? "#fff" : seg.el ? "#c8c8c8" : "#8c8c8c";
+    s.shadowColor = "rgba(255,255,255,0.9)";
+    s.shadowBlur = hot ? LINKS.fs * 0.4 : 0;
+    s.fillText(seg.el ? seg.el._text : seg.text, seg.x, seg.y);
+  }
+  s.restore();
 }
 
 /* flipped, faded copy for the floor */
@@ -386,6 +489,9 @@ function drawSource(t) {
   }
   s.filter = "none";
   s.restore();
+
+  layoutLinks(LOCK.cy * H - GH / 2);
+  drawLinks(s, t);
 }
 
 /* ============================================================
@@ -997,11 +1103,9 @@ function setPaused(p) {
     ctx.setTransform(1,0,0,1,0,0);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
     ctx.fillStyle = "rgba(0,0,0,0.62)";          /* one draw, then silence */
-    ctx.fillRect(0, 0, W, H);
-    linksEl.classList.add("idle");
+    ctx.fillRect(0, 0, W, H);          /* the contact line dims with everything else */
     stopFlicker();
   } else {
-    linksEl.classList.remove("idle");
     startFlicker();
     t0 += performance.now() - pausedAt;
     requestAnimationFrame(loop);
@@ -1090,6 +1194,7 @@ function selftest() {
   ok(xHeight > 0.2 && xHeight < 0.9, "wordmark x-height measured sanely (" + xHeight.toFixed(3) + " em)");
 
   const xcells = (b, pitch) => lockupFs(b.w, b.h) * xHeight / pitch;
+  const fixedCells = b => Math.ceil(b.w / P.cellSize) * Math.ceil(b.h / P.cellSize);
   for (const [vw, vh] of SIZES) {
     for (const dpr of [1, 2]) {
       const at = vw + "x" + vh + "@" + dpr + "x";
@@ -1107,33 +1212,39 @@ function selftest() {
         const worst = xcells(backing(vw, vh, dpr, P.minScale), pitch);
         ok(worst >= XCELL_FLOOR, "wordmark survives minScale at " + at + " (" + worst.toFixed(1) + ")");
       }
+      /* cost: a finer pitch may not cost more than cellBudget, and no window may
+         cost more than the fixed pitch already cost it — pixelBudget owns that end */
       const cells = Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch);
-      ok(cells <= P.cellBudget, "grid stays inside cellBudget at " + at +
-         " (" + cells + " vs " + P.cellBudget + ")");
+      const ceiling = Math.max(P.cellBudget, fixedCells(b));
+      ok(cells <= ceiling, "grid stays inside its ceiling at " + at +
+         " (" + cells + " vs " + ceiling + ")");
     }
   }
   /* Every window, not just the table: the pitch law has to hold across the whole
      space, and the two properties that matter are cheap to check exhaustively. */
   {
-    let minX = null, maxCells = 0, maxFixed = 0;
+    let minX = null, minLink = null, over = null;
     for (let vw = 640; vw <= 3840; vw += 32) {
       for (let vh = 480; vh <= 2160; vh += 32) {
         for (const dpr of [1, 2]) {
           const b = backing(vw, vh, dpr, 1), pitch = cellPitchFor(vw, vh, dpr);
+          const at = vw + "x" + vh + "@" + dpr + "x";
           const cells = Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch);
-          if (cells > maxCells) maxCells = cells;
-          maxFixed = Math.max(maxFixed, Math.ceil(b.w / P.cellSize) * Math.ceil(b.h / P.cellSize));
+          const ratio = cells / Math.max(P.cellBudget, fixedCells(b));
+          if (!over || ratio > over.ratio) over = { ratio, at, cells };
           const x = xcells(b, pitch);
-          if (!minX || x < minX.x) minX = { x, at: vw + "x" + vh + "@" + dpr + "x" };
+          if (!minX || x < minX.x) minX = { x, at };
+          const l = linkFit(b.w, pitch, linkEls.map(el => el.dataset.label || "")).fs * MONO_XH / pitch;
+          if (!minLink || l < minLink.x) minLink = { x: l, at };
         }
       }
     }
     ok(minX.x >= XCELL_FLOOR, "every window from 640x480 up, any shape, clears " + XCELL_FLOOR +
-       " x-cells (worst " + minX.x.toFixed(1) + " at " + minX.at + ")");
-    /* cellBudget is the whole cost contract, so hold it over the whole space —
-       and note what a fixed pitch peaks at, for the record in the failure text */
-    ok(maxCells <= P.cellBudget, "grid never exceeds cellBudget (" + maxCells + " vs " +
-       P.cellBudget + "; a fixed pitch peaks at " + maxFixed + ")");
+       " x-cells of wordmark (worst " + minX.x.toFixed(1) + " at " + minX.at + ")");
+    ok(minLink.x >= XCELL_FLOOR, "...and " + XCELL_FLOOR + " of contact line (worst " +
+       minLink.x.toFixed(1) + " at " + minLink.at + ")");
+    ok(over.ratio <= 1, "grid never exceeds cellBudget or what a fixed pitch already cost (" +
+       over.cells + " at " + over.at + ", ratio " + over.ratio.toFixed(2) + ")");
   }
 
   /* a big window must keep the grid it has today — the fix is for the small end */
@@ -1151,6 +1262,23 @@ function selftest() {
     }
     ok(mono, "pitch never coarsens as a " + aw + ":" + ah + " window grows" + (worst ? " (" + worst + ")" : ""));
   }
+
+  /* ---- the copy targets have to sit on the glyphs ----
+     They are invisible, so if the layout and the boxes ever drift apart the page
+     looks perfect and the links are dead. Hit-test the drawn slots. */
+  for (const seg of LINKS.segs) {
+    if (!seg.el) continue;
+    const k = innerWidth / W;
+    const r = seg.el.getBoundingClientRect();
+    const cx = (seg.x + seg.w / 2) * k, cy = (seg.y - LINKS.fs * MONO_XH / 2) * k;
+    ok(document.elementFromPoint(cx, cy) === seg.el,
+       "the centre of '" + seg.text + "' hits its own copy target");
+    ok(r.left <= seg.x * k + 1 && r.right >= (seg.x + seg.w) * k - 1,
+       "'" + seg.text + "' target spans the drawn word (" + r.left.toFixed(0) + ".." +
+       r.right.toFixed(0) + " vs " + (seg.x * k).toFixed(0) + ".." + ((seg.x + seg.w) * k).toFixed(0) + ")");
+    ok(r.width > 8 && r.height > 8, "'" + seg.text + "' target is big enough to click");
+  }
+  ok(LINKS.segs.filter(g => g.el).length === linkEls.length, "every copy target got a slot");
 
   const save = JSON.parse(JSON.stringify({ renderMode: P.renderMode, blurType: P.blurType, animStyle: P.animStyle, pfx: P.pfx }));
   /* every pixel, not every hundredth: matrix draws a thin moving band over the
@@ -1188,28 +1316,23 @@ function selftest() {
 }
 
 /* ---------- link labels ----------
-   Each character is its own span so it can scintillate into a hex digit, the
-   same trick the glyph field plays. Hover fires a short decode burst, then the
-   word locks so it stays readable while you aim at it. */
+   Each character can scintillate into a hex digit, the same trick the glyph field
+   plays. Hover fires a short decode burst, then the word locks so it stays readable
+   while you aim at it. The text lives here rather than in the DOM — the elements
+   are click targets now, and the canvas draws what these say, so the draw path
+   never touches the DOM. */
 const HEXD = "0123456789ABCDEF";
-function setLabel(el, text) {
-  el.textContent = "";
-  for (const ch of text) {
-    const sp = document.createElement("span");
-    sp.className = "ch";
-    sp.dataset.ch = ch;
-    sp.textContent = ch;
-    el.appendChild(sp);
-  }
-}
-linksEl.querySelectorAll(".copy").forEach(el => {
+function setLabel(el, text) { el._chars = text.split(""); el._text = text; }
+linkEls.forEach(el => {
   el.dataset.label = el.textContent.trim();
+  el.textContent = "";
   setLabel(el, el.dataset.label);
-  el._burst = 0;
-  el.addEventListener("mouseenter", () => { el._burst = 5; });
+  el._burst = 0; el._hot = false;
+  el.addEventListener("mouseenter", () => { el._hot = true; el._burst = 5; });
+  el.addEventListener("mouseleave", () => { el._hot = false; });
   el.addEventListener("click", () => {
     if (navigator.clipboard) navigator.clipboard.writeText(el.dataset.copy).catch(() => {});
-    setLabel(el, "copied!");
+    setLabel(el, COPIED);
     clearTimeout(el._t);
     el._t = setTimeout(() => setLabel(el, el.dataset.label), 1000);
   });
@@ -1217,25 +1340,23 @@ linksEl.querySelectorAll(".copy").forEach(el => {
 
 let flicker = null;
 function flickerTick() {
-  for (const el of linksEl.querySelectorAll(".copy")) {
-    const hot = el.matches(":hover");
-    const p = el._burst > 0 ? 0.55 : hot ? 0 : 0.018;
+  for (const el of linkEls) {
+    const p = el._burst > 0 ? 0.55 : el._hot ? 0 : 0.018;
     if (el._burst > 0) el._burst--;
-    for (const sp of el.children)
-      sp.textContent = Math.random() < p ? HEXD[(Math.random() * 16) | 0] : sp.dataset.ch;
+    el._text = el._chars.map(ch => Math.random() < p ? HEXD[(Math.random() * 16) | 0] : ch).join("");
   }
 }
 const startFlicker = () => { if (!flicker) flicker = setInterval(flickerTick, 110); };
 const stopFlicker  = () => { clearInterval(flicker); flicker = null; };
 
 /* ---------- boot ---------- */
-linksEl.classList.add("on");
 startFlicker();
 const SHOW_FPS = Q.has("fps");
 if (SHOW_FPS) hud.style.display = "block";
 TINT = parseTint(P.tint);
 TONE = buildTone();
 resize();
+monoMetrics();
 if (Q.has("selftest")) { frame(0); selftest(); }
 if (P.pauseWhenIdle && idle()) { frame(0); setPaused(true); stopFlicker(); }   /* loaded in the background */
 else requestAnimationFrame(loop);
