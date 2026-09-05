@@ -12,12 +12,14 @@ No build step, no dependencies. Open `index.html`.
 | Flag | Effect |
 |---|---|
 | `?fps` | Frame time, grid size, cell pitch and live render scale in the corner |
-| `?selftest` | Assert sweep over every render mode, blur type, anim style and post-effect, plus the grid-pitch law across window sizes. Logs `PASS`/`FAIL` to the console |
+| `?selftest` | Assert sweep over every render mode, blur type, anim style and post-effect, plus the grid-pitch law across window sizes and the contact line's copy targets. Logs `PASS`/`FAIL` to the console |
 
 ## How it works
 
 1. `drawSource()` composes the frame that gets ASCII-ified — shaded torus, wordmark,
-   tilt, mirrored floor reflection. Stands in for the photo the original effect uses.
+   tilt, mirrored floor reflection, contact line. Stands in for the photo the original
+   effect uses. The contact line goes in here too, so it becomes glyphs like the rest
+   of the piece; its copy targets are invisible DOM boxes placed from the same layout.
 2. The source is downscaled to one pixel per cell (the GPU box-filters it far faster
    than a JS sampling loop), then each cell becomes a glyph or shape.
 3. Colour chain, blur, post-effects, then the composite.
@@ -35,6 +37,7 @@ Everything lives in the `PARAMS` object at the top of `index.html`.
 | `autoQuality` / `targetMs` / `minScale` | Measures real frame cost, walks the render scale to fit, never past the floor |
 | `pauseWhenIdle` | Hidden or unfocused: the loop stops rescheduling, nothing runs at all |
 | `marginX` / `marginY` / `tilt` | Lockup placement and lean |
+| `linkSize` / `linkRoom` / `minXCells` | Contact line: x-height in cells, the width past which it stacks instead of shrinking, and the legibility floor every piece of text is held to |
 | `pfx` | 9 post-effects, each `{enabled, intensity}` |
 | `animStyle` | `shimmer`, `wave`, `pulse`, `ripple`, `flicker` |
 
