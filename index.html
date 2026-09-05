@@ -175,6 +175,12 @@ function cellPitchFor(vw, vh, dpr) {
 const vpW = () => cv.clientWidth  || innerWidth;
 const vpH = () => cv.clientHeight || innerHeight;
 const cellPitch = () => cellPitchFor(vpW(), vpH(), devicePixelRatio || 1);
+/* The backing store this viewport gets at full resolution, whatever renderScale the
+   auto-quality regulator has settled on. The grid pitch is already measured here
+   (cellPitchFor calls backing(..., 1)); so is the contact line's arrangement, below.
+   Both are properties of the window, and neither may depend on how fast the machine
+   turned out to be. */
+const fullBacking = () => backing(vpW(), vpH(), devicePixelRatio || 1, 1);
 
 /* svh landed in Safari 15.4 and Chrome 108. Older browsers keep the 100vh fallback,
    so measure the visual viewport for them instead — once, and again only when the
@@ -381,6 +387,46 @@ function groupSize(w, h) {
   return { fs, box, gap, font, gw: box + gap + tw, gh: Math.max(box, Math.round(fs * 1.35)) };
 }
 
+/* ---------- the legibility floor, and what auto-quality may spend against it ----
+   x-height of the wordmark's face, per em — the unit minXCells is counted in.
+   Measured off the real face, and re-measured if the face settles later, because
+   the fallback and Instrument Serif do not measure the same. */
+let WORD_XH = 0.51, WORD_XH_FOR = null;
+function wordXH() {
+  if (WORD_XH_FOR !== FONT_OK && tctx) {
+    tctx.save();
+    tctx.font = '200px ' + (FONT_OK ? '"Instrument Serif", ' : '') + 'Georgia, "Times New Roman", serif';
+    const m = tctx.measureText("x");
+    tctx.restore();
+    if (m.actualBoundingBoxAscent > 0) WORD_XH = m.actualBoundingBoxAscent / 200;
+    WORD_XH_FOR = FONT_OK;
+  }
+  return WORD_XH;
+}
+
+/* Cells of x-height carrying the wordmark on a viewport at a given renderScale —
+   the whole of legibility here, since a letter reads exactly when enough cells fall
+   inside it. */
+function xCellsAt(vw, vh, dpr, scale, pitch) {
+  const b = backing(vw, vh, dpr, scale);
+  return lockupFs(b.w, b.h) * wordXH() / pitch;
+}
+
+/* How coarse auto-quality is allowed to go on this viewport. minScale is the global
+   floor, but it was never the whole story: the pitch is measured at full resolution
+   and stays put, while the lockup shrinks with renderScale, so dropping to minScale
+   spends a quarter of the cells the letters are made of. On most windows there is
+   plenty to spend — an iPhone 15 goes 9.8 x-cells to 7.4 — but on a few narrow or
+   very tall phones it spends past the floor: 5.99 at 320x568 (iPhone 5 / SE-1) and
+   5.71 at 383x938, measured. Legibility outranks the frame rate, and the rule was
+   already written down beside the assertion that only happened to hold; this is it
+   in code. Everywhere else it returns minScale unchanged and costs nothing. */
+function scaleFloor(vw, vh, dpr, pitch) {
+  let s = P.minScale || 0.5;
+  while (s < 1 && xCellsAt(vw, vh, dpr, s, pitch) < P.minXCells) s = Math.min(1, s + 0.005);
+  return s;
+}
+
 /* Where the composition sits on a viewport, in CSS pixels down from the top of the
    canvas — the same arithmetic drawSource does below, hoisted so it can be asserted
    for a viewport the window is not currently at. */
@@ -448,8 +494,24 @@ const rowChars = r => r.reduce((n, t) => n + t.length, 0) + r.length - 1;
    is not negotiable; the layout is what gives. Past linkRoom of the window the line
    would out-shout the lockup, so it goes to two rows instead of thinning down.
    Widths are checked against the labels at their longest — a click swaps in a
-   longer word for a second — so the line never resizes under the reader. */
-function linkFit(w, pitch, labels) {
+   longer word for a second — so the line never resizes under the reader.
+
+   Two widths, deliberately. `w` is the backing store at full resolution — the same
+   basis cellPitchFor measures the pitch on, and therefore the same basis the type
+   size is already a multiple of. The arrangement is decided against it so that it is
+   a property of the window: auto-quality drops renderScale ~1.6s after load, and
+   testing against the shrunken live store instead re-arranged the line under the
+   reader on 133 of the 16:9 windows between 900 and 2220 CSS px, measured — one row
+   on a fast machine, two on a slow one. The line is sized in cells and the cell
+   count does not move with renderScale, so on a down-scaled canvas the row does take
+   proportionally more of the visible width — up to linkRoom / minScale, 0.67 rather
+   than 0.50. That is the cost of the arrangement holding still, and it is the same
+   trade the pitch already makes. `live` is the store the row is actually drawn on,
+   and only the last-resort clamp uses it, because overrunning the canvas is about
+   real pixels. Over the whole space the piece targets that clamp never fires at
+   either width (worst row is 0.84 of the margin box at minScale), so the type size
+   comes out identical at every scale — asserted. */
+function linkFit(w, pitch, labels, live) {
   let fs = Math.max(4, Math.ceil(pitch * P.linkSize / MONO_XH));
   const wide = labels.map(l => "x".repeat(Math.max(l.length, COPIED.length)));
   const row = (ls, join) => join ? rowChars(["[", ls[0], "|", ls[1], "]"])
@@ -462,7 +524,7 @@ function linkFit(w, pitch, labels) {
   /* last resort: even stacked it overruns the margins, so it does shrink — a window
      this narrow has no reading size left to protect */
   const n = row(wide, !stacked);
-  const hard = w * (1 - 2 * P.marginX);
+  const hard = (live === undefined ? w : live) * (1 - 2 * P.marginX);
   if (n * fs * MONO_ADV > hard) fs = Math.max(4, Math.floor(hard / (n * MONO_ADV)));
   return { fs, stacked };
 }
@@ -477,7 +539,7 @@ const slotChars = (text, el) => el ? Math.max(text.length, COPIED.length) : text
 const LINKS = { segs: [], fs: 16, adv: 10, sig: "" };
 function layoutLinks(lockTop) {
   const labels = linkEls.map(el => el.dataset.label || "");
-  const fit = linkFit(W, cellPx, labels);
+  const fit = linkFit(fullBacking().w, cellPx, labels, W);
   const fs = fit.fs, adv = fs * MONO_ADV, lh = Math.round(fs * 1.6);
   const lines = fit.stacked
     ? linkEls.map((el, i) => [["["], [labels[i], el], ["]"]])
@@ -1249,9 +1311,11 @@ function autoQuality(gap) {
   const med = qSamples[qSamples.length >> 1];
   /* Cost tracks the backing store, which is area, so the scale that lands on
      targetMs is sqrt(target/measured). Part of a frame is fixed cost that no
-     scale removes, so this asks for slightly more than it needs; minScale bounds
-     how far that can go, and the self-test holds the piece legible there. */
-  const want = clamp(Math.sqrt(P.targetMs / med), P.minScale || 0.5, 1);
+     scale removes, so this asks for slightly more than it needs; scaleFloor bounds
+     how far that can go — minScale, or shallower on the handful of viewports where
+     minScale would take the wordmark under minXCells. */
+  const want = clamp(Math.sqrt(P.targetMs / med),
+                     scaleFloor(vpW(), vpH(), devicePixelRatio || 1, cellPx), 1);
   if (want < 0.995) {
     keepFrame();                       /* the frame to dissolve from */
     renderScale = want;
@@ -1407,7 +1471,6 @@ function selftest() {
      contact line was sized, ~3.5 was unreadable mush and ~6 read cleanly.
      Asserted against the real font metrics and the real pitch law, not a copy. */
   const XCELL_FLOOR = 6;
-  const MIN_AREA = 800 * 600;              /* smallest window the piece is built for */
   const SIZES = [[3440,1440],[2560,1440],[1920,1200],[1920,1080],[1680,1050],[1600,900],
                  [1440,900],[1366,768],[1280,1024],[1280,800],[1280,720],[1152,864],
                  [1024,768],[1024,600],[960,540],[800,600],[720,1280],[640,480]];
@@ -1431,14 +1494,17 @@ function selftest() {
       const b = backing(vw, vh, dpr, 1);
       const x = xcells(b, pitch);
       ok(x >= XCELL_FLOOR, "wordmark keeps " + XCELL_FLOOR + " x-cells at " + at + " (" + x.toFixed(1) + ")");
-      /* auto-quality is allowed to coarsen the grid, but not past legibility.
-         Only over the range the piece targets: at 640x480 with renderScale also
-         down at minScale the wordmark reaches ~5.4 x-cells, and no pitch saves it
-         — cellMin is already the smallest a hex digit draws at. */
-      if (vw * vh >= MIN_AREA) {
-        const worst = xcells(backing(vw, vh, dpr, P.minScale), pitch);
-        ok(worst >= XCELL_FLOOR, "wordmark survives minScale at " + at + " (" + worst.toFixed(1) + ")");
-      }
+      /* Auto-quality is allowed to coarsen the grid, but not past legibility. That
+         used to be a rule the code never enforced and the test only asserted where
+         it happened to hold: below 800x600 it did not — at 640x480, minScale reaches
+         ~5.4 x-cells and no pitch saves it, cellMin being already the smallest a hex
+         digit draws at — so the assertion simply skipped those windows. scaleFloor
+         raises the floor on exactly those viewports instead, and the check is now
+         unconditional: every window, at the coarsest scale it can actually reach. */
+      const floor = scaleFloor(vw, vh, dpr, pitch);
+      const worst = xcells(backing(vw, vh, dpr, floor), pitch);
+      ok(worst >= XCELL_FLOOR, "wordmark survives the coarsest scale allowed at " + at +
+         " (" + worst.toFixed(1) + " cells at scale " + floor.toFixed(2) + ")");
       /* cost: a finer pitch may not cost more than cellBudget, and no window may
          cost more than the fixed pitch already cost it — pixelBudget owns that end */
       const cells = Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch);
@@ -1450,7 +1516,7 @@ function selftest() {
   /* Every window, not just the table: the pitch law has to hold across the whole
      space, and the two properties that matter are cheap to check exhaustively. */
   {
-    let minX = null, minLink = null, over = null;
+    let minX = null, minLink = null, over = null, minFloor = null, costly = null;
     for (let vw = 640; vw <= 3840; vw += 32) {
       for (let vh = 480; vh <= 2160; vh += 32) {
         for (const dpr of [1, 2]) {
@@ -1463,11 +1529,23 @@ function selftest() {
           if (!minX || x < minX.x) minX = { x, at };
           const l = linkFit(b.w, pitch, linkEls.map(el => el.dataset.label || "")).fs * MONO_XH / pitch;
           if (!minLink || l < minLink.x) minLink = { x: l, at };
+          /* and at the coarsest scale auto-quality is allowed to reach here */
+          const floor = scaleFloor(vw, vh, dpr, pitch);
+          const xf = xcells(backing(vw, vh, dpr, floor), pitch);
+          if (!minFloor || xf < minFloor.x) minFloor = { x: xf, at, floor };
+          /* the floor must only rise where it has to: past 800 CSS px wide there is
+             room to spend and the regulator keeps every bit of minScale's relief */
+          if (vw >= 800 && floor > P.minScale && (!costly || floor > costly.floor))
+            costly = { floor, at };
         }
       }
     }
     ok(minX.x >= XCELL_FLOOR, "every window from 640x480 up, any shape, clears " + XCELL_FLOOR +
        " x-cells of wordmark (worst " + minX.x.toFixed(1) + " at " + minX.at + ")");
+    ok(minFloor.x >= XCELL_FLOOR, "...and still clears it at the coarsest scale allowed there (worst " +
+       minFloor.x.toFixed(1) + " at " + minFloor.at + ", scale " + minFloor.floor.toFixed(2) + ")");
+    ok(!costly, "no window 800 CSS px or wider pays for that floor" +
+       (costly ? " (" + costly.at + " held at " + costly.floor.toFixed(2) + ")" : ""));
     ok(minLink.x >= XCELL_FLOOR, "...and " + XCELL_FLOOR + " of contact line (worst " +
        minLink.x.toFixed(1) + " at " + minLink.at + ")");
     ok(over.ratio <= 1, "grid never exceeds cellBudget or what a fixed pitch already cost (" +
@@ -1480,7 +1558,7 @@ function selftest() {
      a 320px-wide window genuinely cannot hold 6 x-cells; cellMin is already the
      smallest a hex digit draws at. No phone is dpr 1.) */
   {
-    let minX = null, minLink = null, over = null, n = 0;
+    let minX = null, minLink = null, over = null, minFloor = null, n = 0;
     for (let vw = 320; vw <= 500; vw += 4) {
       for (let vh = 480; vh <= 1100; vh += 4) {
         /* portrait phones, from a squarish 3:2 to a tall 21:9 — and, because the
@@ -1499,15 +1577,95 @@ function selftest() {
           if (!minX || x < minX.x) minX = { x, at };
           const l = linkFit(b.w, pitch, linkEls.map(el => el.dataset.label || "")).fs * MONO_XH / pitch;
           if (!minLink || l < minLink.x) minLink = { x: l, at };
+          /* The sweep #2 added only ever checked renderScale 1, and phones were
+             exempt from the minScale case above, so the one place the two gaps
+             overlapped went unchecked — and it was not empty: at minScale a
+             320x568 iPhone 5 / SE-1 fell to 5.99 x-cells and a 383x938 sliver to
+             5.71. scaleFloor holds those viewports shallower; this is the check. */
+          const floor = scaleFloor(vw, vh, dpr, pitch);
+          const xf = xcells(backing(vw, vh, dpr, floor), pitch);
+          if (!minFloor || xf < minFloor.x) minFloor = { x: xf, at, floor };
         }
       }
     }
     ok(minX.x >= XCELL_FLOOR, "every one of " + n + " portrait phone shapes clears " + XCELL_FLOOR +
        " x-cells of wordmark (worst " + minX.x.toFixed(1) + " at " + minX.at + ")");
+    ok(minFloor.x >= XCELL_FLOOR, "...and clears it at the coarsest scale allowed there too (worst " +
+       minFloor.x.toFixed(1) + " at " + minFloor.at + ", scale " + minFloor.floor.toFixed(2) + ")");
+    ok(xcells(backing(320, 568, 2, P.minScale), cellPitchFor(320, 568, 2)) < XCELL_FLOOR,
+       "and minScale really would have gone under it on a 320x568 phone (" +
+       xcells(backing(320, 568, 2, P.minScale), cellPitchFor(320, 568, 2)).toFixed(2) + ")");
     ok(minLink.x >= XCELL_FLOOR, "...and " + XCELL_FLOOR + " of contact line (worst " +
        minLink.x.toFixed(1) + " at " + minLink.at + ")");
     ok(over.ratio <= 1, "the grid stays inside its ceiling on a phone too (" +
        over.cells + " at " + over.at + ", ratio " + over.ratio.toFixed(2) + ")");
+  }
+
+  /* ---- the contact line's arrangement is a property of the window ----
+     linkFit sizes the type off the grid pitch, and cellPitchFor measures that on the
+     full-resolution backing store — but the row's width used to be tested against
+     the *live* store, which auto-quality shrinks to minScale about 1.6s after load.
+     The type size therefore held and the stacking decision did not: the same window
+     put the line on one row on a fast machine and two on a slow one, and the slow
+     one watched it re-arrange. The cross-dissolve added in #2 softens a re-tiled
+     mosaic; it was never meant to cover a changed layout.
+
+     Both halves are asserted. The arrangement and the type size must not move with
+     the scale — and the old basis must be shown to have moved them, or the first
+     assertion is testing nothing. */
+  {
+    const labels = linkEls.map(el => el.dataset.label || "");
+    const SCALES = [P.minScale, 0.8, 0.85, 0.9, 0.95, 1];
+    let flip = null, size = null, wouldFlip = 0, wouldAt = "", n = 0;
+    const sweep = (vw, vh, dpr) => {
+      const pitch = cellPitchFor(vw, vh, dpr), full = backing(vw, vh, dpr, 1).w;
+      const base = linkFit(full, pitch, labels, full);
+      for (const sc of SCALES) {
+        n++;
+        const live = backing(vw, vh, dpr, sc).w;
+        const got = linkFit(full, pitch, labels, live);
+        if (!flip && got.stacked !== base.stacked) flip = vw + "x" + vh + "@" + dpr + " at " + sc;
+        if (!size && got.fs !== base.fs) size = vw + "x" + vh + "@" + dpr + " at " + sc;
+        /* the bug: the same row decided against the shrunken store instead */
+        if (linkFit(live, pitch, labels, live).stacked !== base.stacked) {
+          wouldFlip++; if (!wouldAt) wouldAt = vw + "x" + vh + "@" + dpr + " at " + sc;
+        }
+      }
+    };
+    for (let vw = 640; vw <= 3840; vw += 10)
+      for (const dpr of [1, 2]) sweep(vw, Math.round(vw * 9 / 16), dpr);
+    for (let vw = 320; vw <= 500; vw += 2)
+      for (let vh = 480; vh <= 1100; vh += 8) {
+        const ar = vh / vw;
+        if (ar >= 1.45 && ar <= 2.45) for (const dpr of [2, 3]) sweep(vw, vh, dpr);
+      }
+    ok(!flip, "the same viewport stacks the contact line the same way at every scale from " +
+       P.minScale + " to 1, over " + n + " of them" + (flip ? " (" + flip + ")" : ""));
+    ok(!size, "...and gives it the same type size" + (size ? " (" + size + ")" : ""));
+    ok(wouldFlip > 0, "and deciding it on the live store really did re-arrange the row (" +
+       wouldFlip + " cases, e.g. " + wouldAt + ")");
+    /* the last-resort clamp is the one thing that still reads the live store, because
+       overrunning the canvas is about real pixels — it must never be what fires */
+    const rowChars2 = r => r.reduce((a, t) => a + t.length, 0) + r.length - 1;
+    const widest = labels.map(l => "x".repeat(Math.max(l.length, COPIED.length)));
+    let worstRoom = null;
+    for (let vw = 320; vw <= 3840; vw += 8) {
+      for (const ar of [9 / 16, 3 / 4, 1, 16 / 9, 2, 2.4]) {
+        const vh = Math.round(vw * ar);
+        if (vh < 240 || vh > 2400) continue;
+        for (const dpr of [1, 2, 3]) {
+          const pitch = cellPitchFor(vw, vh, dpr), full = backing(vw, vh, dpr, 1).w;
+          const f = linkFit(full, pitch, labels, backing(vw, vh, dpr, P.minScale).w);
+          const chars = f.stacked ? Math.max.apply(null, widest.map(l => rowChars2(["[", l, "]"])))
+                                  : rowChars2(["[", widest[0], "|", widest[1], "]"]);
+          const room = chars * f.fs * MONO_ADV /
+                       (backing(vw, vh, dpr, P.minScale).w * (1 - 2 * P.marginX));
+          if (!worstRoom || room > worstRoom.room) worstRoom = { room, at: vw + "x" + vh + "@" + dpr };
+        }
+      }
+    }
+    ok(worstRoom.room <= 1, "the widened row still fits the margins on a minScale canvas (worst " +
+       worstRoom.room.toFixed(2) + " of it at " + worstRoom.at + ")");
   }
 
   /* a big window must keep the grid it has today — the fix is for the small end */
@@ -1554,7 +1712,12 @@ function selftest() {
 
     const slow = drive(50, 8000);                       /* 20fps */
     ok(slow.corrections === 1, "a slow machine is corrected exactly once (" + slow.corrections + ")");
-    ok(slow.scale < 1 && slow.scale >= P.minScale, "the correction lands inside minScale (" + slow.scale.toFixed(2) + ")");
+    /* the floor is minScale on every window wider than 800 CSS px, and shallower on
+       the few narrow ones where minScale would cost the wordmark its sixth cell —
+       read it rather than assuming, so this passes on a phone too */
+    const FLOOR = scaleFloor(vpW(), vpH(), devicePixelRatio || 1, cellPx);
+    ok(slow.scale < 1 && slow.scale >= FLOOR, "the correction lands inside the floor (" +
+       slow.scale.toFixed(2) + " >= " + FLOOR.toFixed(2) + ")");
     ok(slow.at >= P.warmupMs && slow.at <= P.warmupMs + P.sampleMs + 4 * 50,
        "it waits out the warm-up before deciding (" + slow.at + "ms)");
 
@@ -1568,7 +1731,7 @@ function selftest() {
     const blip = drive(8, 8000, { after: 140, ms: 2000 });
     ok(blip.corrections === 0, "one stalled frame does not re-tile the mosaic");
     const heavy = drive(150, 12000);                    /* every frame over 100ms */
-    ok(heavy.corrections === 1 && heavy.scale === P.minScale,
+    ok(heavy.corrections === 1 && heavy.scale === FLOOR,
        "frames past any stall threshold are the signal, not outliers (" + heavy.scale.toFixed(2) + ")");
 
     /* and a window change re-arms it, because the cost changed with the window */
