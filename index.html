@@ -9,14 +9,24 @@
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:wght@400&display=swap" rel="stylesheet">
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
-  canvas{display:block;width:100vw;height:100vh}
+  /* 100vh on a phone is the *large* viewport: the height you get once the browser
+     toolbars have collapsed. The composition is bottom-anchored, so laying it out
+     at that height puts the wordmark and its whole reflection behind the toolbars
+     on load. svh is the small viewport — the height that is visible while the
+     toolbars are up — and unlike dvh it is a fixed number that does not slide as
+     they retract, so the piece is laid out once and never drifts. The 100vh line
+     stays as the fallback for browsers without svh. */
+  canvas{display:block;width:100vw;height:100vh;height:100svh}
   #hud{position:fixed;left:10px;top:8px;color:#5f8;font:11px ui-monospace,Consolas,monospace;opacity:.7;display:none}
   /* The contact line is drawn into the source canvas so it becomes glyphs like
      everything else — these are just its click targets, placed from the same
      layout and invisible. Nothing here decides where the words appear. */
   #links{position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;
-         color:transparent;user-select:none;white-space:nowrap}
-  #links .copy{position:absolute;pointer-events:auto;cursor:pointer}
+         color:transparent;-webkit-user-select:none;user-select:none;white-space:nowrap}
+  /* touch-action kills the 300ms double-tap-zoom wait on the invisible boxes, and
+     the tap highlight would flash a grey rectangle over a piece that is all black */
+  #links .copy{position:absolute;pointer-events:auto;cursor:pointer;
+               touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 </style>
 </head>
 <body>
@@ -95,7 +105,9 @@ const PARAMS = {
   targetMs: 24,       /* ~42fps. Higher = holds full resolution longer */
   warmupMs: 800,      /* ignore the first frames: font, atlases and JIT are settling */
   sampleMs: 800,      /* then watch real frame intervals this long, and decide once */
-  minScale: 0.75      /* never go coarser than this, however slow the machine */
+  minScale: 0.75,     /* never go coarser than this, however slow the machine */
+  qualityFadeMs: 320, /* the one correction re-tiles the mosaic: dissolve, don't cut */
+  fontGraceMs: 1500   /* boot waits this long for the wordmark's own face, no longer */
 };
 
 const P = PARAMS;
@@ -155,12 +167,39 @@ function cellPitchFor(vw, vh, dpr) {
   while (pitch < P.cellSize && Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch) > P.cellBudget) pitch++;
   return pitch;
 }
-const cellPitch = () => cellPitchFor(innerWidth, innerHeight, devicePixelRatio || 1);
+/* The viewport is the canvas box, not innerHeight. On a phone innerHeight is the
+   *large* viewport — the height once the toolbars have collapsed — while the canvas
+   is 100svh, the height that is visible while they are up. Reading the element keeps
+   the backing store, the glyph grid and the invisible hit boxes on one number by
+   construction, so they cannot disagree about what "the viewport" means. */
+const vpW = () => cv.clientWidth  || innerWidth;
+const vpH = () => cv.clientHeight || innerHeight;
+const cellPitch = () => cellPitchFor(vpW(), vpH(), devicePixelRatio || 1);
 
-function resize() {
-  const b = backing(innerWidth, innerHeight, devicePixelRatio || 1, renderScale);
+/* svh landed in Safari 15.4 and Chrome 108. Older browsers keep the 100vh fallback,
+   so measure the visual viewport for them instead — once, and again only when the
+   width changes, which is an orientation change. Following it on every toolbar slide
+   is the drift svh exists to avoid. */
+const HAS_SVH = !!(window.CSS && CSS.supports && CSS.supports("height", "100svh"));
+let svhAt = -1;
+function viewportFallback() {
+  if (HAS_SVH || innerWidth === svhAt) return;
+  svhAt = innerWidth;
+  cv.style.height = Math.round((window.visualViewport && visualViewport.height) || innerHeight) + "px";
+}
+
+/* Returns whether anything actually changed. A phone fires "resize" on every toolbar
+   slide, and every resize() re-tiles the whole mosaic — the jump in bug 2. With the
+   layout keyed to the small viewport the numbers do not move, so there is nothing to
+   rebuild and the piece holds still. */
+function resize(force) {
+  viewportFallback();
+  watchDpr();                        /* before any early return: the listener is once-only */
+  const b = backing(vpW(), vpH(), devicePixelRatio || 1, renderScale);
+  const pitch = cellPitch();
+  if (!force && src && b.w === W && b.h === H && pitch === cellPx) return false;
   W = b.w; H = b.h;
-  cellPx = cellPitch();
+  cellPx = pitch;
   cv.width = W; cv.height = H;
   src = mk(W,H);  sctx = src.getContext("2d", { willReadFrequently: true });
   glyph = mk(W,H); gctx = glyph.getContext("2d", { willReadFrequently: true });
@@ -173,15 +212,15 @@ function resize() {
   atlases.clear();
   lastAtlas = null; lastBucket = -1;
   grp = null;
-  watchDpr();
+  return true;
 }
-addEventListener("resize", () => { requality(); resize(); });
+addEventListener("resize", () => { if (resize()) requality(); });
 
 /* Dragging the window to a monitor with different scaling changes
    devicePixelRatio without reliably firing "resize", which leaves the canvas
    rendering at the old density — it looks soft until you nudge the window. */
 let dprQuery = null;
-function onDprChange() { requality(); resize(); }
+function onDprChange() { if (resize()) requality(); }
 function watchDpr() {
   if (dprQuery) dprQuery.removeEventListener("change", onDprChange);
   dprQuery = matchMedia("(resolution: " + (devicePixelRatio || 1) + "dppx)");
@@ -295,21 +334,42 @@ function drawDonut(box, A, B) {
   return dbuf;
 }
 
-let FONT_OK = false;
-(async () => {
+/* The wordmark is measured, and the two faces do not measure the same: at 1440x900
+   the lockup is 735px wide in the Georgia fallback and 672 in Instrument Serif. Draw
+   the first frames in the fallback and the swap moves the lockup, and with it the
+   contact line, which clamps itself above the lockup's top edge. So boot waits —
+   see fontReady at the bottom. FONT_SETTLED says the question has been answered;
+   grp = null covers a face that arrives after the grace ran out. */
+let FONT_OK = false, FONT_SETTLED = false, FONT_GATE = false, framesBeforeGate = 0;
+let FONT_SETTLED_AT = -1, FONT_GATE_AT = -1;
+const BOOT_AT = performance.now();
+/* document.fonts.check() answers "is everything this string would use loaded?", and
+   when the family is absent the string falls through to a system serif that always
+   is — so it returns true offline, which is the opposite of what it is being asked.
+   Ask the set directly instead. */
+const haveSerif = () => {
+  let got = false;
+  document.fonts.forEach(f => { if (f.family === "Instrument Serif" && f.status === "loaded") got = true; });
+  return got;
+};
+const fontReady = (async () => {
   try {
     await document.fonts.load('64px "Instrument Serif"');
     await document.fonts.ready;
-    FONT_OK = document.fonts.check('64px "Instrument Serif"');
+    FONT_OK = haveSerif();
   } catch (e) { /* offline: the serif fallback still reads right */ }
+  FONT_SETTLED = true;
+  FONT_SETTLED_AT = performance.now() - BOOT_AT;
   grp = null;
 })();
 
 /* [donut] addicted, transparent background */
 let grp = null, gpx = null, GW = 0, GH = 0;
 const LOCK = { cx: 0.5, cy: 0.5, w: 1, h: 1 };
-function buildGroup(t) {
-  const fs  = lockupFs(W, H);
+/* The lockup's box on a given backing store, measured without drawing it, so the
+   self-test can ask where the composition lands on a phone the browser is not. */
+function groupSize(w, h) {
+  const fs  = lockupFs(w, h);
   const box = Math.round(fs * 1.45);
   const gap = Math.round(fs * 0.28);
   const font = fs + 'px ' + (FONT_OK ? '"Instrument Serif", ' : '') + 'Georgia, "Times New Roman", serif';
@@ -318,7 +378,25 @@ function buildGroup(t) {
   if ("letterSpacing" in tctx) tctx.letterSpacing = (fs * 0.012).toFixed(2) + "px";
   const tw = Math.ceil(tctx.measureText(P.word).width);
   tctx.restore();
-  const gw = box + gap + tw, gh = Math.max(box, Math.round(fs * 1.35));
+  return { fs, box, gap, font, gw: box + gap + tw, gh: Math.max(box, Math.round(fs * 1.35)) };
+}
+
+/* Where the composition sits on a viewport, in CSS pixels down from the top of the
+   canvas — the same arithmetic drawSource does below, hoisted so it can be asserted
+   for a viewport the window is not currently at. */
+function compositionAt(vw, vh, dpr, scale) {
+  const b = backing(vw, vh, dpr, scale === undefined ? 1 : scale);
+  const g = groupSize(b.w, b.h);
+  const gapY = Math.round(g.gh * 0.01), rh = g.gh * 0.78;
+  const cy = b.h * (1 - P.marginY) - (g.gh / 2 + gapY + rh);
+  const k = vh / b.h;                                  /* backing px -> CSS px */
+  return { top: (cy - g.gh / 2) * k, bottom: (cy + g.gh / 2) * k,
+           tail: (cy + g.gh / 2 + gapY + rh) * k, gh: g.gh, k };
+}
+
+function buildGroup(t) {
+  const g = groupSize(W, H);
+  const fs = g.fs, box = g.box, gap = g.gap, font = g.font, gw = g.gw, gh = g.gh;
   if (!grp || GW !== gw || GH !== gh) { grp = mk(gw, gh); gpx = grp.getContext("2d"); GW = gw; GH = gh; }
   gpx.setTransform(1,0,0,1,0,0);
   gpx.globalAlpha = 1; gpx.globalCompositeOperation = "source-over"; gpx.filter = "none";
@@ -376,6 +454,10 @@ function linkFit(w, pitch, labels) {
   const wide = labels.map(l => "x".repeat(Math.max(l.length, COPIED.length)));
   const row = (ls, join) => join ? rowChars(["[", ls[0], "|", ls[1], "]"])
                                  : Math.max.apply(null, ls.map(l => rowChars(["[", l, "]"])));
+  /* linkRoom is a guard on how much of the window the line's *ink* takes, and the
+     slots below change only the whitespace, never a word's own width — so this is
+     measured on the labels, exactly as before, and the stacking threshold does not
+     move. The hard clamp under it is the one that has to see the widened row. */
   const stacked = row(labels, true) * fs * MONO_ADV > w * P.linkRoom;
   /* last resort: even stacked it overruns the margins, so it does shrink — a window
      this narrow has no reading size left to protect */
@@ -385,14 +467,21 @@ function linkFit(w, pitch, labels) {
   return { fs, stacked };
 }
 
-const LINKS = { segs: [], fs: 16, sig: "" };
+/* A word's slot is as wide as the longest thing that word can ever show — its label,
+   or "copied!" after a tap. The row is built from the slots, never from the live text,
+   so a tap (or the decode flicker) cannot change the row's character count, re-centre
+   it and slide every other token sideways. linkFit already sizes the type off exactly
+   these widths, so the two agree. */
+const slotChars = (text, el) => el ? Math.max(text.length, COPIED.length) : text.length;
+
+const LINKS = { segs: [], fs: 16, adv: 10, sig: "" };
 function layoutLinks(lockTop) {
-  const label = el => el._text || "";
-  const fit = linkFit(W, cellPx, linkEls.map(el => el.dataset.label || ""));
+  const labels = linkEls.map(el => el.dataset.label || "");
+  const fit = linkFit(W, cellPx, labels);
   const fs = fit.fs, adv = fs * MONO_ADV, lh = Math.round(fs * 1.6);
   const lines = fit.stacked
-    ? linkEls.map(el => [["["], [label(el), el], ["]"]])
-    : [[["["], [label(linkEls[0]), linkEls[0]], ["|"], [label(linkEls[1]), linkEls[1]], ["]"]]];
+    ? linkEls.map((el, i) => [["["], [labels[i], el], ["]"]])
+    : [[["["], [labels[0], linkEls[0]], ["|"], [labels[1], linkEls[1]], ["]"]]];
 
   /* Its own row, where it has always sat — the middle of the window — but never
      inside the lockup: a bigger line lifts clear of it instead of overlapping. */
@@ -405,23 +494,24 @@ function layoutLinks(lockTop) {
   const segs = [];
   let sig = W + "," + H + "," + fs;
   lines.forEach((line, li) => {
-    const n = rowChars(line.map(t => t[0]));
+    const slots = line.map(t => slotChars(t[0], t[1]));
+    const n = slots.reduce((a, b) => a + b, 0) + line.length - 1;
     let x = Math.round((W - n * adv) / 2);
     const base = Math.round(top + li * lh + lh / 2 + fs * MONO_XH / 2);
-    for (const t of line) {
-      segs.push({ x, y: base, text: t[0], el: t[1] || null, w: t[0].length * adv });
-      if (t[1]) sig += "|" + Math.round(x) + "," + base + "," + t[0].length;
-      x += (t[0].length + 1) * adv;
-    }
+    line.forEach((t, i) => {
+      segs.push({ x, y: base, text: t[0], el: t[1] || null, w: slots[i] * adv });
+      if (t[1]) sig += "|" + Math.round(x) + "," + base + "," + slots[i];
+      x += (slots[i] + 1) * adv;
+    });
   });
-  LINKS.segs = segs; LINKS.fs = fs;
+  LINKS.segs = segs; LINKS.fs = fs; LINKS.adv = adv;
   if (sig !== LINKS.sig) { LINKS.sig = sig; placeLinkTargets(); }
 }
 
 /* the click targets, straight off the layout above: same rects, so they cannot
    drift from the glyphs and leave the page looking right with dead links */
 function placeLinkTargets() {
-  const k = innerWidth / W, pad = LINKS.fs * 0.35, xh = LINKS.fs * MONO_XH;
+  const k = vpW() / W, pad = LINKS.fs * 0.35, xh = LINKS.fs * MONO_XH;
   for (const seg of LINKS.segs) {
     if (!seg.el) continue;
     const st = seg.el.style;
@@ -440,13 +530,15 @@ function drawLinks(s, t) {
   const fade = clamp(t / 0.5, 0, 1);             /* the fade-in the CSS used to do */
   for (const seg of LINKS.segs) {
     const hot = seg.el && seg.el._hot;
+    const txt = seg.el ? seg.el._text : seg.text;
     /* the brackets and the bar sit back on colour alone — dimming them as well
        drops them under the ink threshold in half the render modes */
     s.globalAlpha = fade;
     s.fillStyle = hot ? "#fff" : seg.el ? "#c8c8c8" : "#8c8c8c";
     s.shadowColor = "rgba(255,255,255,0.9)";
     s.shadowBlur = hot ? LINKS.fs * 0.4 : 0;
-    s.fillText(seg.el ? seg.el._text : seg.text, seg.x, seg.y);
+    /* centred in its slot, so a longer label grows about its own middle */
+    s.fillText(txt, seg.x + (seg.w - txt.length * LINKS.adv) / 2, seg.y);
   }
   s.restore();
 }
@@ -1081,9 +1173,42 @@ function compose() {
   lightsPass();
   maskPass();
   postfx();
+  qualityFade();
+}
+
+/* ---------- the one quality correction, dissolved ----------
+   autoQuality still measures once and corrects once — that behaviour is deliberate
+   and is not what this touches. But the correction calls resize(), a different
+   backing store is a different grid, and every glyph on screen lands somewhere new
+   in the same frame: a hard cut, about 1.6s after load. Keep the last frame at the
+   old resolution and dissolve into the new one. The snapshot is at the old W/H and
+   is drawn stretched to the new ones, which is the same rectangle on screen, so the
+   two grids sit exactly on top of each other while one fades out. */
+let fadeShot = null, fadeCtx = null, fadeFrom = 0;
+const fadeAlpha = now => fadeShot ? clamp(1 - (now - fadeFrom) / Math.max(1, P.qualityFadeMs), 0, 1) : 0;
+function keepFrame() {
+  if (!W || !H) return;
+  if (!fadeShot || fadeShot.width !== W || fadeShot.height !== H) {
+    fadeShot = mk(W, H); fadeCtx = fadeShot.getContext("2d");
+  }
+  fadeCtx.setTransform(1,0,0,1,0,0);
+  fadeCtx.globalAlpha = 1; fadeCtx.globalCompositeOperation = "copy"; fadeCtx.filter = "none";
+  fadeCtx.drawImage(cv, 0, 0);
+  fadeFrom = performance.now();
+}
+function qualityFade() {
+  if (!fadeShot) return;
+  const a = fadeAlpha(performance.now());
+  if (a <= 0) { fadeShot = null; fadeCtx = null; return; }
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.globalCompositeOperation = "source-over"; ctx.filter = "none";
+  ctx.globalAlpha = a;
+  ctx.drawImage(fadeShot, 0, 0, W, H);
+  ctx.globalAlpha = 1;
 }
 
 function frame(t) {
+  if (!FONT_GATE) framesBeforeGate++;      /* the property the gate exists to hold */
   drawSource(t);
   renderCells(t);
   compose();
@@ -1127,7 +1252,11 @@ function autoQuality(gap) {
      scale removes, so this asks for slightly more than it needs; minScale bounds
      how far that can go, and the self-test holds the piece legible there. */
   const want = clamp(Math.sqrt(P.targetMs / med), P.minScale || 0.5, 1);
-  if (want < 0.995) { renderScale = want; resize(); }
+  if (want < 0.995) {
+    keepFrame();                       /* the frame to dissolve from */
+    renderScale = want;
+    if (!resize()) { fadeShot = null; fadeCtx = null; }   /* nothing re-tiled after all */
+  }
 }
 
 /* ---------- idle shutdown ----------
@@ -1221,6 +1350,57 @@ function selftest() {
   }
   ok(oob === 0 && hits > 0, "donut projects inside the buffer (" + oob + " strays of " + hits + ")");
 
+  /* ---- the composition has to land inside the *visible* viewport ----
+     100vh on a phone is the large viewport: the height you get once the browser
+     toolbars have collapsed. The piece is bottom-anchored — drawSource puts the
+     reflection tail marginY from the bottom — so laying it out at that height put
+     the wordmark and its whole reflection behind the toolbars on load, and the top
+     sliver of the donut was all you got. The canvas is 100svh now and every number
+     comes off the canvas box, so "the viewport" is the height that is always
+     visible. Asserted both ways: it fits the small viewport, and it demonstrably
+     did not fit when it was laid out at the large one.
+
+     Device emulation over CDP has no browser chrome, so innerHeight there is the
+     whole screen and the bug is invisible. These numbers are real device metrics
+     with the real visible height, which is why they are a table and not a probe. */
+  {
+    const PHONES = [
+      { at: "iPhone 15",    vw: 393, vh: 852, svh: 746, dpr: 3 },
+      { at: "iPhone 13/14", vw: 390, vh: 844, svh: 739, dpr: 3 },
+      { at: "iPhone SE",    vw: 375, vh: 667, svh: 553, dpr: 2 },
+      { at: "Pixel 7",      vw: 412, vh: 915, svh: 801, dpr: 2.625 },
+      { at: "Galaxy S20",   vw: 360, vh: 800, svh: 700, dpr: 3 }
+    ];
+    for (const d of PHONES) {
+      const fit = compositionAt(d.vw, d.svh, d.dpr);
+      ok(fit.tail <= d.svh, "the whole reflection is on screen at " + d.at +
+         " (tail " + fit.tail.toFixed(0) + " of " + d.svh + " visible)");
+      ok(fit.top >= 0, "and the wordmark's top edge is too at " + d.at +
+         " (" + fit.top.toFixed(0) + ")");
+      /* the bug this exists for: the same composition laid out at innerHeight */
+      const was = compositionAt(d.vw, d.vh, d.dpr);
+      ok(was.tail > d.svh, "laying out at innerHeight really did hide it at " + d.at +
+         " (tail " + was.tail.toFixed(0) + ", " + (was.tail - d.svh).toFixed(0) + "px below the fold)");
+      /* auto-quality may coarsen the grid; it must not move the composition off screen */
+      ok(compositionAt(d.vw, d.svh, d.dpr, P.minScale).tail <= d.svh,
+         "...and it stays on screen at minScale at " + d.at);
+    }
+    /* the layout reads the canvas box, so CSS and JS cannot disagree about the height */
+    ok(vpW() === cv.clientWidth && vpH() === cv.clientHeight,
+       "the layout is keyed to the canvas box, not to innerWidth/innerHeight");
+    ok(Math.abs((vpW() / vpH()) / (W / H) - 1) < 0.02,
+       "the backing store keeps the canvas box's aspect, so the grid and the hit boxes agree");
+    ok(compositionAt(vpW(), vpH(), devicePixelRatio || 1, renderScale).tail <= vpH() + 1,
+       "the live composition is inside the live canvas box");
+    /* a phone fires resize on every toolbar slide, and every resize() re-tiles */
+    const W0 = W, H0 = H, c0 = cellPx;
+    ok(resize() === false, "an unchanged viewport does not re-tile the mosaic");
+    ok(W === W0 && H === H0 && cellPx === c0, "...and leaves the grid exactly as it was");
+    /* dpr 3 phones render at maxDpr, which is the cap doing its job, not a shortfall */
+    ok(backing(393, 746, 3, 1).w === backing(393, 746, 2, 1).w,
+       "maxDpr caps a 3x phone at the same backing store a 2x one gets");
+  }
+
   /* ---- legibility: how many cells carry each letter, at every window size ----
      The whole piece is glyphs on a grid, so a letter is readable exactly when
      enough cells fall inside it. Floor is 6 x-height cells: measured when the
@@ -1294,6 +1474,42 @@ function selftest() {
        over.cells + " at " + over.at + ", ratio " + over.ratio.toFixed(2) + ")");
   }
 
+  /* The sweep above starts at 640 CSS px wide, which no phone is. Portrait phones
+     are their own shape — around 1:2 — and they all run at dpr 2 or more, so sweep
+     that space too rather than assuming the desktop result carries over. (At dpr 1
+     a 320px-wide window genuinely cannot hold 6 x-cells; cellMin is already the
+     smallest a hex digit draws at. No phone is dpr 1.) */
+  {
+    let minX = null, minLink = null, over = null, n = 0;
+    for (let vw = 320; vw <= 500; vw += 4) {
+      for (let vh = 480; vh <= 1100; vh += 4) {
+        /* portrait phones, from a squarish 3:2 to a tall 21:9 — and, because the
+           canvas is the small viewport, the same shapes minus the toolbars. A 1:3
+           sliver is a shape no phone has and the desktop sweep above owns the rest. */
+        const ar = vh / vw;
+        if (ar < 1.45 || ar > 2.45) continue;
+        for (const dpr of [2, 3]) {
+          n++;
+          const b = backing(vw, vh, dpr, 1), pitch = cellPitchFor(vw, vh, dpr);
+          const at = vw + "x" + vh + "@" + dpr + "x";
+          const cells = Math.ceil(b.w / pitch) * Math.ceil(b.h / pitch);
+          const ratio = cells / Math.max(P.cellBudget, Math.ceil(b.w / P.cellSize) * Math.ceil(b.h / P.cellSize));
+          if (!over || ratio > over.ratio) over = { ratio, at, cells };
+          const x = xcells(b, pitch);
+          if (!minX || x < minX.x) minX = { x, at };
+          const l = linkFit(b.w, pitch, linkEls.map(el => el.dataset.label || "")).fs * MONO_XH / pitch;
+          if (!minLink || l < minLink.x) minLink = { x: l, at };
+        }
+      }
+    }
+    ok(minX.x >= XCELL_FLOOR, "every one of " + n + " portrait phone shapes clears " + XCELL_FLOOR +
+       " x-cells of wordmark (worst " + minX.x.toFixed(1) + " at " + minX.at + ")");
+    ok(minLink.x >= XCELL_FLOOR, "...and " + XCELL_FLOOR + " of contact line (worst " +
+       minLink.x.toFixed(1) + " at " + minLink.at + ")");
+    ok(over.ratio <= 1, "the grid stays inside its ceiling on a phone too (" +
+       over.cells + " at " + over.at + ", ratio " + over.ratio.toFixed(2) + ")");
+  }
+
   /* a big window must keep the grid it has today — the fix is for the small end */
   for (const [vw, vh] of [[1920,1080],[2560,1440],[3440,1440],[1920,1200]])
     ok(cellPitchFor(vw, vh, 1) === P.cellSize, "pitch untouched at " + vw + "x" + vh);
@@ -1359,9 +1575,110 @@ function selftest() {
     requality();
     ok(!qDone && qSamples.length === 0, "a viewport change re-arms the one correction");
 
+    /* ---- ...and the one correction it does make dissolves instead of cutting ----
+       The decision is untouched. What changed is that resize() re-tiles the whole
+       mosaic in one frame, which reads as the art jumping about 1.6s after load.
+       The frame before the correction is kept and faded out over it. */
+    requality(); renderScale = 1; resize(); frame(1.7);
+    fadeShot = null;
+    drive(150, 12000);
+    ok(renderScale < 1, "the correction still fires with the fade in place");
+    ok(fadeShot !== null, "and it keeps the frame it is dissolving from");
+    ok(fadeShot.width !== W || fadeShot.height !== H,
+       "the kept frame is the pre-correction grid (" + fadeShot.width + "x" + fadeShot.height +
+       " over " + W + "x" + H + ")");
+    ok(Math.abs(fadeAlpha(fadeFrom) - 1) < 1e-9, "the dissolve starts fully on the old frame");
+    ok(Math.abs(fadeAlpha(fadeFrom + P.qualityFadeMs / 2) - 0.5) < 1e-9, "and is half way, half way");
+    ok(fadeAlpha(fadeFrom + P.qualityFadeMs) === 0, "and is over when qualityFadeMs is up");
+    fadeFrom = performance.now() - P.qualityFadeMs - 1;
+    compose();
+    ok(fadeShot === null, "a finished dissolve releases the frame it was holding");
+
     P.autoQuality = saveAuto;
     renderScale = saveScale;
-    resize();
+    resize(true);
+  }
+
+  /* ---- boot waits for the wordmark's own face ----
+     FONT_OK started false, so the first frames drew in the Georgia fallback and the
+     swap re-measured the lockup: 735px wide to 672 at 1440x900, measured. LOCK.cx and
+     LOCK.cy move with GW, and the contact line moves too because it clamps itself
+     above the lockup's top edge. Nothing is drawn now until the question is answered
+     or the grace runs out. */
+  {
+    ok(FONT_GATE, "the font gate is open by the time anything renders");
+    ok(framesBeforeGate === 0, "not one frame was drawn before it (" + framesBeforeGate + ")");
+    const due = Math.min(FONT_SETTLED_AT < 0 ? Infinity : FONT_SETTLED_AT, P.fontGraceMs);
+    ok(FONT_GATE_AT + 2 >= due, "it opened on the face or on the grace, whichever came first (gate " +
+       FONT_GATE_AT.toFixed(0) + "ms, face " + (FONT_SETTLED_AT < 0 ? "pending" : FONT_SETTLED_AT.toFixed(0) + "ms") +
+       ", grace " + P.fontGraceMs + "ms)");
+    ok(P.fontGraceMs > 0 && P.fontGraceMs <= 5000,
+       "the wait is bounded, so an unreachable stylesheet still paints (" + P.fontGraceMs + "ms)");
+    /* why the gate is needed at all: the two faces do not measure the same */
+    if (FONT_OK) {
+      const withIt = groupSize(W, H).gw;
+      FONT_OK = false;
+      const without = groupSize(W, H).gw;
+      FONT_OK = true;
+      ok(withIt !== without, "the fallback and Instrument Serif measure differently (" +
+         without + " vs " + withIt + ") — hence the gate");
+    } else ok(true, "Instrument Serif unavailable here; the fallback is what draws");
+  }
+
+  /* ---- a tap must not slide the row ----
+     setLabel swaps a 4-character label for a 7-character one. layoutLinks built the
+     row from the live text, so the row's character count changed, x = (W - n*adv)/2
+     re-centred it, and every token in the row slid sideways — 58px at 1440x900,
+     measured. Slots are sized off the widest label a word can ever show. */
+  {
+    frame(1.7);
+    const snap = () => LINKS.segs.map(g => g.x.toFixed(2) + "," + g.y + "," + g.w.toFixed(2)).join("|");
+    const rects = () => LINKS.segs.filter(g => g.el).map(g => {
+      const r = g.el.getBoundingClientRect();
+      return [r.left, r.top, r.width, r.height].map(v => v.toFixed(1)).join(",");
+    }).join("|");
+    const was = snap(), wasR = rects();
+    for (const el of linkEls) setLabel(el, COPIED);
+    frame(1.7);
+    ok(snap() === was, "a copied! label moves nothing in the row");
+    ok(rects() === wasR, "...and the invisible click targets stay where they were");
+    for (const el of linkEls) setLabel(el, NOCOPY);
+    frame(1.7);
+    ok(snap() === was, "nor does the failure label");
+    for (const el of linkEls) setLabel(el, el._chars.map(() => "F").join(""));
+    frame(1.7);
+    ok(snap() === was, "nor does a decode burst");
+    for (const el of linkEls) setLabel(el, el.dataset.label);
+    frame(1.7);
+    ok(NOCOPY.length === COPIED.length, "the failure label is the width of the success one");
+    ok(LINKS.segs.every(g => !g.el || g.w >= COPIED.length * LINKS.adv - 1e-9),
+       "every word's slot is at least as wide as the longest label it can show");
+    /* the slot is what the type size was computed against, so nothing overruns */
+    const line = LINKS.segs[LINKS.segs.length - 1];
+    ok(line.x + line.w <= W - W * P.marginX + LINKS.adv,
+       "the widened row still sits inside the margins");
+  }
+
+  /* ---- a touch has to be able to light a word, and must not leave it stuck ----
+     Hover was mouseenter/mouseleave only: on a touch screen that is either no hover
+     at all or a synthetic one whose mouseleave never comes. */
+  {
+    const el = linkEls[0], fire = (type, pointerType) =>
+      el.dispatchEvent(new PointerEvent(type, { pointerType, bubbles: false }));
+    el._hot = false;
+    fire("pointerenter", "touch");
+    ok(el._hot === true, "a touch pointer lights the word");
+    fire("pointerup", "touch");
+    ok(el._hot === false, "and lifting it puts the word out again");
+    fire("pointerenter", "touch"); fire("pointercancel", "touch");
+    ok(el._hot === false, "a cancelled touch does not leave it stuck bright");
+    fire("pointerenter", "mouse");
+    ok(el._hot === true, "a mouse still lights it");
+    fire("pointerup", "mouse");
+    ok(el._hot === true, "...and clicking with a mouse does not put it out");
+    fire("pointerleave", "mouse");
+    ok(el._hot === false, "leaving with a mouse does");
+    el._burst = 0;
   }
 
   /* ---- background stars fade on their own phases ----
@@ -1464,18 +1781,53 @@ function selftest() {
    never touches the DOM. */
 const HEXD = "0123456789ABCDEF";
 function setLabel(el, text) { el._chars = text.split(""); el._text = text; }
+
+/* navigator.clipboard does not exist at all on file:// and other non-secure
+   contexts, and mobile Safari rejects the write often enough to matter. Try the
+   modern API, fall back to the old selection trick, and only then claim success.
+   NOCOPY is the same width as COPIED so the slot it sits in never changes. */
+const NOCOPY = "failed!";
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0";
+  document.body.appendChild(ta);
+  let ok = false;
+  try { ta.select(); ta.setSelectionRange(0, text.length); ok = document.execCommand("copy"); }
+  catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    return navigator.clipboard.writeText(text).then(() => true, () => legacyCopy(text));
+  return Promise.resolve(legacyCopy(text));
+}
 linkEls.forEach(el => {
   el.dataset.label = el.textContent.trim();
   el.textContent = "";
   setLabel(el, el.dataset.label);
   el._burst = 0; el._hot = false;
-  el.addEventListener("mouseenter", () => { el._hot = true; el._burst = 5; });
-  el.addEventListener("mouseleave", () => { el._hot = false; });
+  /* Hover was mouseenter/mouseleave only, so a touch screen got either no hover at
+     all — the word never brightens, the decode burst never fires — or a synthetic
+     one whose mouseleave never arrives, leaving the word stuck bright. Pointer
+     events cover both, and a touch pointer is cooled explicitly when it lifts
+     rather than trusting every browser to fire pointerleave for a pointer that has
+     ceased to exist. */
+  el.addEventListener("pointerenter", () => { if (!el._hot) { el._hot = true; el._burst = 5; } });
+  el.addEventListener("pointerleave",  () => { el._hot = false; });
+  el.addEventListener("pointercancel", () => { el._hot = false; });
+  el.addEventListener("pointerup", e => { if (e.pointerType !== "mouse") el._hot = false; });
   el.addEventListener("click", () => {
-    if (navigator.clipboard) navigator.clipboard.writeText(el.dataset.copy).catch(() => {});
-    setLabel(el, COPIED);
-    clearTimeout(el._t);
-    el._t = setTimeout(() => setLabel(el, el.dataset.label), 1000);
+    /* the label used to say "copied!" whether or not anything reached the clipboard:
+       the rejection was swallowed. Mobile Safari is where that lies most often. */
+    const say = ok => {
+      setLabel(el, ok ? COPIED : NOCOPY);
+      clearTimeout(el._t);
+      el._t = setTimeout(() => setLabel(el, el.dataset.label), 1000);
+    };
+    copyText(el.dataset.copy).then(say, () => say(false));
   });
 });
 
@@ -1490,17 +1842,29 @@ function flickerTick() {
 const startFlicker = () => { if (!flicker) flicker = setInterval(flickerTick, 110); };
 const stopFlicker  = () => { clearInterval(flicker); flicker = null; };
 
-/* ---------- boot ---------- */
-startFlicker();
+/* ---------- boot ----------
+   Nothing is drawn until the wordmark's face is settled: the first frames used to
+   render in the Georgia fallback, and the swap to Instrument Serif re-measured the
+   lockup and moved it, and the contact line with it. fontGraceMs bounds the wait, so
+   a stylesheet that never arrives (file://, no network, a blocked CDN) still paints —
+   at which point grp = null in fontReady still picks up a late face, one jump instead
+   of one on every load. The stylesheet is render-blocking, so the page was already
+   waiting on it before this ever ran. */
 const SHOW_FPS = Q.has("fps");
-if (SHOW_FPS) hud.style.display = "block";
-TINT = parseTint(P.tint);
-TONE = buildTone();
-resize();
-monoMetrics();
-if (Q.has("selftest")) { frame(0); selftest(); }
-if (P.pauseWhenIdle && idle()) { frame(0); setPaused(true); stopFlicker(); }   /* loaded in the background */
-else requestAnimationFrame(loop);
+(async () => {
+  startFlicker();
+  if (SHOW_FPS) hud.style.display = "block";
+  TINT = parseTint(P.tint);
+  TONE = buildTone();
+  await Promise.race([fontReady, new Promise(r => setTimeout(r, P.fontGraceMs))]);
+  FONT_GATE = true;
+  FONT_GATE_AT = performance.now() - BOOT_AT;
+  resize(true);
+  monoMetrics();
+  if (Q.has("selftest")) { frame(0); selftest(); }
+  if (P.pauseWhenIdle && idle()) { frame(0); setPaused(true); stopFlicker(); }   /* loaded in the background */
+  else requestAnimationFrame(loop);
+})();
 </script>
 </body>
 </html>

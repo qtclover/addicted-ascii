@@ -12,7 +12,7 @@ No build step, no dependencies. Open `index.html`.
 | Flag | Effect |
 |---|---|
 | `?fps` | Real frame interval and fps, script time, grid size, cell pitch and live render scale in the corner |
-| `?selftest` | Assert sweep over every render mode, blur type, anim style and post-effect, plus the grid-pitch law across window sizes and the contact line's copy targets. Logs `PASS`/`FAIL` to the console |
+| `?selftest` | Assert sweep over every render mode, blur type, anim style and post-effect, plus the grid-pitch law across window and phone sizes, the composition landing inside the visible viewport, the font gate, the contact line's fixed slots and its copy targets. Logs `PASS`/`FAIL` to the console |
 
 ## How it works
 
@@ -35,11 +35,33 @@ Everything lives in the `PARAMS` object at the top of `index.html`.
 | `cellRef` / `cellMin` / `cellBudget` | The pitch follows the lockup so a small window keeps as many cells inside each letter as a big one, floored at what a hex digit can draw and capped in total cells |
 | `maxDpr` / `pixelBudget` | Render at device pixels for crisp glyphs, up to a backing-store cap |
 | `autoQuality` / `targetMs` / `warmupMs` / `sampleMs` / `minScale` | Measures real frame intervals once the page has settled, then picks the render scale in a single step and stops — every change re-tiles the mosaic, so it only ever does it once per window |
+| `qualityFadeMs` | That one re-tile is a dissolve, not a cut: the frame before it is kept and faded out over the new grid |
+| `fontGraceMs` | Boot waits this long for Instrument Serif before drawing anything, so the wordmark is never measured in the fallback and then re-measured |
 | `pauseWhenIdle` | Hidden or unfocused: the loop stops rescheduling, nothing runs at all |
 | `marginX` / `marginY` / `tilt` | Lockup placement and lean |
 | `linkSize` / `linkRoom` / `minXCells` | Contact line: x-height in cells, the width past which it stacks instead of shrinking, and the legibility floor every piece of text is held to |
 | `pfx` | 9 post-effects, each `{enabled, intensity}` |
 | `animStyle` | `shimmer`, `wave`, `pulse`, `ripple`, `flicker` |
+
+## Phones
+
+The canvas is `100svh`, the *small* viewport — the height that stays visible while the
+browser toolbars are up. `100vh` and `innerHeight` are the *large* viewport, the height
+you only get once they have collapsed, and the composition is bottom-anchored, so
+laying it out at that height puts the wordmark and its whole reflection behind the
+toolbars on load. `svh` rather than `dvh` because `dvh` tracks the toolbars as they
+slide, and a composition that re-lays-out while you scroll is the same defect wearing
+a different hat.
+
+Everything downstream reads the canvas element's own box (`vpW()` / `vpH()`) rather
+than `innerWidth` / `innerHeight`, so the backing store, the glyph grid and the
+invisible copy targets cannot disagree about what the viewport is. `resize()` returns
+whether anything actually changed, and does nothing when it has not — a phone fires
+`resize` on every toolbar slide, and each rebuild re-tiles the whole mosaic.
+
+Note when testing: `Emulation.setDeviceMetricsOverride` over CDP has **no browser
+chrome**, so `innerHeight` there is the whole screen and this class of bug is
+invisible. Test on a device, or pin the canvas shorter than `innerHeight` by hand.
 
 ## Credits
 
