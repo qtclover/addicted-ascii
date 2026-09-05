@@ -559,6 +559,20 @@ function animMod(cx, cy, t) {
   }
 }
 
+/* ---------- background speckle ----------
+   The faint scatter of digits across the dark parts of the frame. Every star has
+   its own phase and period and fades through zero, so they come and go on their
+   own time. The field used to be re-rolled from hash(x, y, (t * 6) | 0) — one
+   seed, shared by every cell and quantised to sixths of a second — so the whole
+   field changed at the same instant six times a second and jump-cut as a group. */
+const STAR_CUT = 0.945;                /* the top 5.5% of cells are stars... */
+function starAt(cx, cy, t) {           /* ...each lit for half of its own cycle */
+  const s = hash(cx, cy, 13);
+  if (s < STAR_CUT) return 0;
+  const k = Math.sin((t * (0.35 + hash(cx, cy, 17) * 0.9) + hash(cx, cy, 19)) * TAU);
+  return k < 0.02 ? 0 : (0.027 + 0.836 * (s - STAR_CUT)) * k;   /* peak 0.027..0.073 */
+}
+
 /* ============================================================
    CELL RENDERERS — 25 modes
    ============================================================ */
@@ -769,10 +783,9 @@ function renderCells(t) {
       const i = ry * cols + rx;
       let L = LUM[i];
       if (L < 0.004) {                       /* pure background: sparse speckle or nothing */
-        const hb = hash(rx, ry, (t * 6) | 0);
-        if (hb < 0.972) continue;
+        const f = starAt(rx, ry, t);
+        if (f <= 0) continue;
         cell[0] = cell[1] = cell[2] = 255;
-        const f = 0.018 + 1.1 * (hb - 0.972);
         drawCell(g, P.renderMode, rx*cs, ry*cs, cs, hash(rx, ry, 11), cell, rx, ry, t, f);
         continue;
       }
@@ -1261,6 +1274,46 @@ function selftest() {
       prev = p2;
     }
     ok(mono, "pitch never coarsens as a " + aw + ":" + ah + " window grows" + (worst ? " (" + worst + ")" : ""));
+  }
+
+  /* ---- background stars fade on their own phases ----
+     The whole field used to be re-rolled from one time-quantised seed, so every
+     star changed at the same instant six times a second: measured across a frame
+     boundary, the field replaced itself (churn 2.09 of its own brightness). Fading
+     independently, no single frame may move more than a fraction of it. */
+  {
+    const SW = 80, SH = 60, dt = 1 / 60, FRAMES = 180;
+    let worst = 0, worstAt = 0, litSum = 0, brightSum = 0;
+    for (const t0 of [0, 7.25]) {
+      let prev = null;
+      for (let f = 0; f < FRAMES; f++) {
+        const t = t0 + f * dt;
+        const now = new Float64Array(SW * SH);
+        let bright = 0, lit = 0;
+        for (let cy = 0; cy < SH; cy++) for (let cx = 0; cx < SW; cx++) {
+          const v = starAt(cx, cy, t);
+          now[cy * SW + cx] = v;
+          if (v > 0) { lit++; bright += v; }
+        }
+        if (prev) {
+          let d = 0;
+          for (let j = 0; j < now.length; j++) d += Math.abs(now[j] - prev[j]);
+          if (d / bright > worst) { worst = d / bright; worstAt = t; }
+        }
+        prev = now; litSum += lit; brightSum += bright;
+      }
+    }
+    ok(worst <= 0.25, "no frame jump-cuts the star field (worst " + worst.toFixed(3) +
+       " of its brightness at t=" + worstAt.toFixed(2) + ")");
+    /* ...and they are not simply frozen: a static field would pass the above */
+    const lit = t => { const a = []; for (let cy = 0; cy < SH; cy++) for (let cx = 0; cx < SW; cx++) a.push(starAt(cx, cy, t) > 0); return a; };
+    const a = lit(3), b = lit(4.5);
+    let on = 0, changed = 0;
+    for (let j = 0; j < a.length; j++) { if (a[j]) on++; if (a[j] !== b[j]) changed++; }
+    ok(changed / on >= 0.4, "stars still come and go (" + (changed / on * 100).toFixed(0) + "% turnover in 1.5s)");
+    const density = litSum / (FRAMES * 2 * SW * SH);
+    ok(density > 0.015 && density < 0.045, "star density stays a speckle (" + (density * 100).toFixed(2) + "% of cells)");
+    ok(brightSum / litSum < 0.08, "stars stay faint (mean " + (brightSum / litSum).toFixed(4) + ")");
   }
 
   /* ---- the copy targets have to sit on the glyphs ----
