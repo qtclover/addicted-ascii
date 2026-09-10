@@ -870,6 +870,13 @@ function drawLinks(s) {
     for (const p of row) {
       const w = wide(p.t);                       /* the ink */
       const slot = p.el ? slotOf(p.el) : w;      /* the space it is allotted */
+      /* Centred inside its slot, not flush left in it. The slot is as wide as the
+         longest label the word can ever show, so a short one like "mail" left three
+         characters of slack trailing it — which pushed the closing bracket out and
+         made the whole row read as off-centre. Splitting the slack either side keeps
+         the row a fixed width, so nothing moves when the label changes, and puts the
+         ink where the eye expects it. */
+      const ink = x + (slot - w) / 2;
       /* Hover lifts the word to white and adds a bloom the grid spreads into the
          surrounding cells — brightness alone is a weak signal once the field has
          quantised it. Base sits high because this corner is where the vignette bites
@@ -878,9 +885,9 @@ function drawLinks(s) {
       s.fillStyle = p.el ? (hot ? "#ffffff" : "#f2f2f2") : "#6e6e6e";
       s.shadowColor = hot ? "rgba(255,255,255,0.85)" : "transparent";
       s.shadowBlur = hot ? fs * 0.5 : 0;
-      s.fillText(p.t, x, y);
+      s.fillText(p.t, ink, y);
       s.shadowBlur = 0; s.shadowColor = "transparent";
-      if (p.el) LINK_HITS.push({ el: p.el, t: p.t, x, y: y - fs * 0.95, w, h: fs * 1.3 });
+      if (p.el) LINK_HITS.push({ el: p.el, t: p.t, x: ink, y: y - fs * 0.95, w, h: fs * 1.3 });
       x += slot;
     }
   });
@@ -2376,14 +2383,22 @@ function selftest() {
     const hit = hitOf(el);
     ok(hit.t === "copied!", 'clicking shows "copied!" in the field, got "' + hit.t + '"');
     ok(hit.w > beforeW, '"copied!" is wider ink than the label (' + beforeW.toFixed(0) + " -> " + hit.w.toFixed(0) + "px)");
-    /* and none of that may move the row. Every word owns a slot as wide as the
-       longest thing it can say, so the ink grows inside a layout that does not. */
+    /* and none of that may move the layout. Every word owns a slot as wide as the
+       longest thing it can say, so the ink grows inside a row that does not. The word
+       that changed re-centres within its own slot — that is the cost of centring the
+       ink rather than leaving it flush left with the slack trailing, which is what
+       made the row read as lopsided — but nothing else may move at all. */
     const moved = before.filter(b => {
+      if (b.el === el) return false;                 /* the one that changed is allowed to */
       const now = hitOf(b.el);
       return !now || Math.abs(now.x - b.x) > 0.5 || Math.abs(now.y - b.y) > 0.5;
     });
-    ok(moved.length === 0, "and no word moves when one of them changes width: " +
+    ok(moved.length === 0, "no other word moves when one of them changes width: " +
        moved.map(m => m.el.dataset.label).join(", "));
+    /* the changed word stays inside the slot it always had */
+    const slack = Math.abs(hitOf(el).x - before.find(b => b.el === el).x);
+    ok(slack <= (hit.w - beforeW) / 2 + 1,
+       "and it re-centres inside its own slot rather than pushing the row (" + slack.toFixed(1) + "px)");
     el._copied = wasCopied; hitKey = ""; drawSource(1.7);
     ok(hitOf(el).t === el.dataset.label, "the word comes back after a second");
 
