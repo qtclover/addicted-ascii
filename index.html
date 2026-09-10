@@ -791,6 +791,20 @@ let hitKey = "";
    cells to survive being averaged into hex digits, and eight is where "discord"
    stops reading and starts being texture. */
 const LINK_MIN_CELLS = 8;
+/* The words and the frame around them — brackets and separators. They are two
+   values, not one value and a dimming, because the grid quantises: anything far
+   enough below the ink to read as "quieter" on a normal canvas falls under the
+   threshold that decides whether a cell gets a glyph at all, and simply vanishes. */
+/* #6e6e6e read as a sensible "quieter grey" on a normal canvas and was invisible
+   here: measured over the bracket's own cells it lit 6.4% of them against the words'
+   ink, because most of its strokes fell under the threshold that decides whether a
+   cell gets a glyph at all. The threshold sits between #8c8c8c and #a4a4a4 — above
+   it, brightness buys no further coverage (10.7% at every value tried) — and
+   #a4a4a4 drops back to 10.0% in the corner where the vignette bites hardest, which
+   is exactly where the landscape composition puts this line. So: past the crossing
+   with margin, and still around 40% of the words' ink, which is what subordinate
+   means once the grid has had its say. */
+let LINK_INK = "#f2f2f2", LINK_FRAME = "#b0b0b0";
 function drawLinks(s) {
   if (!copyEls.length) return;
   s.save();
@@ -889,7 +903,7 @@ function drawLinks(s) {
          quantised it. Base sits high because this corner is where the vignette bites
          hardest. */
       const hot = p.el && p.el._hot;
-      s.fillStyle = p.el ? (hot ? "#ffffff" : "#f2f2f2") : "#6e6e6e";
+      s.fillStyle = p.el ? (hot ? "#ffffff" : LINK_INK) : LINK_FRAME;
       s.shadowColor = hot ? "rgba(255,255,255,0.85)" : "transparent";
       s.shadowBlur = hot ? fs * 0.5 : 0;
       s.fillText(p.t, ink, y);
@@ -2512,6 +2526,31 @@ function selftest() {
        and it is what actually broke: the old regular-weight hairline measured 0.118. */
     ok(n > 0 && meanL >= 0.13, "the contact words hold their ink through the grid (mean " +
        meanL.toFixed(3) + ", need 0.13)");
+    /* The brackets and separators have to survive the same grid, and the two ways of
+       being wrong are opposite: bright enough and they compete with the words,
+       quiet enough and they stop being drawn. Assert both ends. */
+    {
+      const b0 = LINK_HITS[0];
+      const ry0 = b0.y | 0, ry1 = (b0.y + b0.h) | 0;
+      const strip = sctx.getImageData(0, ry0, W, Math.max(1, ry1 - ry0)).data;
+      let firstLit = -1;
+      for (let x = 0; x < W && firstLit < 0; x++) {
+        for (let y = 0; y < ry1 - ry0; y++) if (strip[(y * W + x) * 4] > 40) { firstLit = x; break; }
+      }
+      const fx0 = Math.max(0, (firstLit / P.cellSize) | 0);
+      const fx1 = Math.min(cols, Math.ceil((b0.x - P.cellSize) / P.cellSize));
+      const fy0 = Math.max(0, (b0.y / P.cellSize) | 0), fy1 = Math.min(rows, Math.ceil((b0.y + b0.h) / P.cellSize));
+      let fSum = 0, fN = 0, fLit = 0;
+      for (let y = fy0; y < fy1; y++) for (let x = fx0; x < fx1; x++) {
+        const L = LUM[y * cols + x]; fN++; fSum += L; if (L > 0.18) fLit++;
+      }
+      const fMean = fSum / Math.max(1, fN), fPct = fLit / Math.max(1, fN) * 100;
+      ok(firstLit >= 0 && fN > 0 && fPct >= 9,
+         "the brackets survive the grid rather than falling under it (" + fPct.toFixed(1) + "% of cells lit)");
+      ok(fMean < meanL * 0.6,
+         "and stay subordinate to the words (" + fMean.toFixed(3) + " against " + meanL.toFixed(3) + ")");
+    }
+
     /* the grid is what eats these words, so the floor is measured in cells, not px */
     const tall = b.h / 1.3 / P.cellSize;
     ok(tall >= LINK_MIN_CELLS, "contact words stay at least " + LINK_MIN_CELLS +
