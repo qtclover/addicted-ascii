@@ -9,7 +9,13 @@
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:wght@400&display=swap" rel="stylesheet">
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
-  canvas{display:block;width:100vw;height:100vh}
+  /* svh, not vh: vh is the *large* viewport on mobile — the height you get once the
+     toolbars have collapsed — and this composition is bottom-anchored, so on load the
+     wordmark and its whole reflection sat behind the toolbars. svh rather than dvh
+     because dvh tracks the toolbars as they slide, which re-lays the piece out under
+     the reader. The vh line is the fallback for browsers without svh. */
+  canvas{display:block;width:100vw;height:100vh;height:100svh}
+  #links .copy{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #hud{position:fixed;left:10px;top:8px;color:#5f8;font:11px ui-monospace,Consolas,monospace;
        opacity:.7;display:none;white-space:pre;line-height:1.5}
   /* buttons ported from addicted.md, monochrome to match the glyph field */
@@ -154,6 +160,18 @@ let W = 0, H = 0, cols = 0, rows = 0, DPX = 1;
 let src, sctx, glyph, gctx, tmp, tctx, bloomC, bctx, small, smctx;
 let LUM = null, COL = null;
 
+/* Everything downstream measures the canvas element's own box rather than
+   innerWidth/innerHeight, so the backing store, the glyph grid and the invisible copy
+   targets cannot disagree about what the viewport is — they used to, by the height of
+   a phone's toolbars. It also means a host that reports a zero-sized window (an
+   unlaid-out preview pane) falls back instead of computing a DPX of 320. */
+let vpW = 0, vpH = 0;
+function measureViewport() {
+  const r = cv.getBoundingClientRect();
+  vpW = Math.max(1, Math.round(r.width) || innerWidth || 320);
+  vpH = Math.max(1, Math.round(r.height) || innerHeight || 240);
+}
+
 let renderScale = 1;          /* driven by the auto-quality loop below */
 let lastCell = -1;            /* the grid pitch the current buffers were built for */
 /* Cap first, scale second. Capping the *product* pinned the backing store to the
@@ -180,18 +198,19 @@ const quantScale = (v) => 1 / Math.max(1, Math.round(1 / Math.max(0.05, v)));
    fraction of it: k is the only quantity the eye can see here. */
 function snapDivisor(scale, devPr) { return Math.max(1, Math.round(1 / Math.max(0.05, scale * devPr))); }
 function resize() {
-  const dpr = backingDpr(innerWidth, innerHeight, devicePixelRatio, renderScale);
+  measureViewport();
+  const dpr = backingDpr(vpW, vpH, devicePixelRatio, renderScale);
   if (dpr < 1) {                       /* upscaling: land on an integer ratio */
     const k = snapDivisor(renderScale, Math.min(P.maxDpr || 1, devicePixelRatio || 1));
-    W = Math.max(320, Math.round(innerWidth / k));
-    H = Math.max(240, Math.round(innerHeight / k));
+    W = Math.max(320, Math.round(vpW / k));
+    H = Math.max(240, Math.round(vpH / k));
   } else {
-    W = Math.max(320, (innerWidth * dpr) | 0);
-    H = Math.max(240, (innerHeight * dpr) | 0);
+    W = Math.max(320, (vpW * dpr) | 0);
+    H = Math.max(240, (vpH * dpr) | 0);
   }
   /* smoothing is what turned hard-edged glyphs into grey mush; with the integer
      snap above, nearest neighbour gives clean whole-pixel cells instead */
-  cv.style.imageRendering = W < innerWidth ? "pixelated" : "auto";
+  cv.style.imageRendering = W < vpW ? "pixelated" : "auto";
   /* Snapping means several render scales land on the same divisor, and re-tiling to
      the size you are already at is pure cost: six canvases, the atlas, the mosaic.
      Nothing has moved, so leave it alone — but "nothing" has to include the grid
@@ -200,7 +219,7 @@ function resize() {
   if (src && cv.width === W && cv.height === H && lastCell === P.cellSize) { watchDpr(); return; }
   lastCell = P.cellSize;
   cv.width = W; cv.height = H;
-  DPX = W / Math.max(1, innerWidth);   /* device px per CSS px — post-effects size themselves in CSS px */
+  DPX = W / vpW;                       /* device px per CSS px — post-effects size themselves in CSS px */
   /* only `small` and `sub` are ever read back; willReadFrequently on the rest
      forces them off the GPU for draws that never need it */
   src = mk(W,H);  sctx = src.getContext("2d");
@@ -522,7 +541,16 @@ const FONT_READY = (async () => {
   try {
     await document.fonts.load('64px "Instrument Serif"');
     await document.fonts.ready;
-    FONT_OK = document.fonts.check('64px "Instrument Serif"');
+    /* document.fonts.check() answers the wrong question: it returns true when the
+       family is absent entirely, so offline it cheerfully claimed Instrument Serif
+       and the piece laid itself out in Georgia. Measure instead — if the family is
+       really there the width differs from the fallback's. */
+    const width = (family) => {
+      const c = mk(1, 1).getContext("2d");
+      c.font = '64px ' + family;
+      return c.measureText("addicted").width;
+    };
+    FONT_OK = width('"Instrument Serif", Georgia, serif') !== width('Georgia, serif');
   } catch (e) { /* offline: the serif fallback still reads right */ }
   grp = null;
 })();
@@ -763,8 +791,13 @@ function drawLinks(s) {
      two candidate layouts once at a reference size and divide, instead of guessing a
      size and re-measuring until it fits. */
   setFont(100);
-  const perPxLine = inline.reduce((w, p) => w + wide(p.t), 0) / 100;
-  const perPxCol = Math.max(...copyEls.map(el => wide(label(el)))) / 100;
+  /* Each word occupies a slot as wide as the longest label it can ever show, so that
+     swapping "mail" for "copied!" does not widen the row, re-centre it and slide every
+     other token sideways. The word's own ink stays exactly where it was; the row is a
+     few characters wider at rest, which also lines the brackets up when it stacks. */
+  const slotOf = (el) => Math.max(wide(el.dataset.label), wide("copied!"));
+  const perPxLine = inline.reduce((w, p) => w + (p.el ? slotOf(p.el) : wide(p.t)), 0) / 100;
+  const perPxCol = Math.max(...copyEls.map(slotOf)) / 100;
 
   /* The line has to end before the lockup begins, or a narrow window runs the
      contact words straight into the donut. */
@@ -800,7 +833,8 @@ function drawLinks(s) {
     const y = base - (rows.length - 1 - r) * lead;
     let x = x0;
     for (const p of row) {
-      const w = wide(p.t);
+      const w = wide(p.t);                       /* the ink */
+      const slot = p.el ? slotOf(p.el) : w;      /* the space it is allotted */
       /* Hover lifts the word to white and adds a bloom the grid spreads into the
          surrounding cells — brightness alone is a weak signal once the field has
          quantised it. Base sits high because this corner is where the vignette bites
@@ -812,7 +846,7 @@ function drawLinks(s) {
       s.fillText(p.t, x, y);
       s.shadowBlur = 0; s.shadowColor = "transparent";
       if (p.el) LINK_HITS.push({ el: p.el, t: p.t, x, y: y - fs * 0.95, w, h: fs * 1.3 });
-      x += w;
+      x += slot;
     }
   });
   s.restore();
@@ -2289,16 +2323,50 @@ function selftest() {
        nothing, so measure it on the short label. */
     const hitOf = (e) => LINK_HITS.find(h => h.el === e);
     const el = copyEls.filter(e => e.dataset.copy).pop(), wasCopied = el._copied;
+    const before = LINK_HITS.map(h => ({ el: h.el, x: h.x, y: h.y }));
     const beforeW = hitOf(el).w;
-    const beforeBox = parseFloat(el.style.width);
     el._copied = performance.now(); hitKey = "";
     drawSource(1.7);
     const hit = hitOf(el);
     ok(hit.t === "copied!", 'clicking shows "copied!" in the field, got "' + hit.t + '"');
-    ok(hit.w > beforeW, '"copied!" re-lays the line out (' + beforeW.toFixed(0) + " -> " + hit.w.toFixed(0) + "px)");
-    ok(Math.abs(parseFloat(el.style.width) - beforeBox) > 1, "the hit box follows the wider word");
+    ok(hit.w > beforeW, '"copied!" is wider ink than the label (' + beforeW.toFixed(0) + " -> " + hit.w.toFixed(0) + "px)");
+    /* and none of that may move the row. Every word owns a slot as wide as the
+       longest thing it can say, so the ink grows inside a layout that does not. */
+    const moved = before.filter(b => {
+      const now = hitOf(b.el);
+      return !now || Math.abs(now.x - b.x) > 0.5 || Math.abs(now.y - b.y) > 0.5;
+    });
+    ok(moved.length === 0, "and no word moves when one of them changes width: " +
+       moved.map(m => m.el.dataset.label).join(", "));
     el._copied = wasCopied; hitKey = ""; drawSource(1.7);
     ok(hitOf(el).t === el.dataset.label, "the word comes back after a second");
+
+    /* The word may only say copied! when the handle reached the clipboard. Both real
+       paths need document focus and a trusted gesture, so drive the decision itself. */
+    {
+      const realW = navigator.clipboard && navigator.clipboard.writeText;
+      const realE = document.execCommand;
+      const stub = (writeOk, execOk) => {
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText = writeOk ? () => Promise.resolve()
+                                                  : () => Promise.reject(new Error("refused"));
+        }
+        document.execCommand = () => execOk;
+      };
+      /* awaited one at a time: toClipboard suspends on its first await, so installing
+         all three stubs up front would have every call resume against the last one */
+      (async () => {
+        stub(true, false);  const native   = await toClipboard("x");
+        stub(false, true);  const fallback = await toClipboard("x");
+        stub(false, false); const neither  = await toClipboard("x");
+        if (navigator.clipboard) navigator.clipboard.writeText = realW;
+        document.execCommand = realE;
+        if (!native)   console.error("FAIL: the clipboard's own path reports success");
+        if (!fallback) console.error("FAIL: execCommand covers a non-secure context");
+        if (neither)   console.error("FAIL: with both refused it must report failure");
+      })();
+      ok(true, "clipboard success is reported from the write, not assumed (async, logs its own failures)");
+    }
   }
 
   /* ---------- entry gate, soundtrack, contact-line legibility ---------- */
@@ -2538,6 +2606,28 @@ function selftest() {
    The old per-character hex scintillation is gone: the glyph field turns these
    words into hex digits anyway, so the effect is now intrinsic rather than 99 DOM
    text-node writes a second, and the 110ms interval that drove it is gone with it. */
+/* Only claim it when it happened. The old form fired writeText, swallowed the
+   rejection and said "copied!" regardless — on file://, in a non-secure context, or
+   with permission refused, the word lied and the handle was never on the clipboard.
+   execCommand is the fallback for exactly those cases; it is deprecated and it is
+   also the only thing that works there. Module scope, so the sweep can drive it: both
+   real paths need document focus and a trusted gesture, which a test has neither of. */
+async function toClipboard(text) {
+  if (navigator.clipboard && isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall through */ }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch (e) { return false; }
+}
+
 const copyEls = [...linksEl.querySelectorAll(".copy")];
 copyEls.forEach(el => {
   el._hot = false;
@@ -2546,12 +2636,16 @@ copyEls.forEach(el => {
   el.setAttribute("role", "button");
   el.setAttribute("aria-label", "copy " + el.dataset.label + " — " + el.dataset.copy);
   const activate = () => {
-    if (navigator.clipboard) navigator.clipboard.writeText(el.dataset.copy).catch(() => {});
-    el._copied = performance.now();       /* drawLinks shows "copied!" for a second */
-    hitKey = "";                          /* the word changed width, so re-place the box */
+    toClipboard(el.dataset.copy).then((ok) => {
+      if (ok) el._copied = performance.now();   /* drawLinks shows "copied!" for a second */
+    });
   };
-  el.addEventListener("mouseenter", () => { el._hot = true; });
-  el.addEventListener("mouseleave", () => { el._hot = false; });
+  /* pointer events, and touch pointers cooled explicitly on lift: a touch fires enter
+     and never leaves, so a tapped word used to stay bright for the rest of the visit */
+  el.addEventListener("pointerenter", (e) => { el._hot = e.pointerType !== "touch"; });
+  el.addEventListener("pointerleave", () => { el._hot = false; });
+  el.addEventListener("pointercancel", () => { el._hot = false; });
+  el.addEventListener("pointerup", (e) => { if (e.pointerType === "touch") el._hot = false; });
   el.addEventListener("focus", () => { el._hot = true; });
   el.addEventListener("blur",  () => { el._hot = false; });
   el.addEventListener("click", activate);
@@ -2741,7 +2835,7 @@ function bench() {
   renderScale = wasScale; P.cellSize = wasCell; enterAt = wasAt;
   P.autoQuality = wasAQ; P.pauseWhenIdle = wasPause; resize();
   frame(1.5);                     /* put the picture back; a blank canvas reads as a crash */
-  const out = "BENCH  dpr " + (devicePixelRatio || 1) + "  " + innerWidth + "x" + innerHeight +
+  const out = "BENCH  dpr " + (devicePixelRatio || 1) + "  " + vpW + "x" + vpH +
               "\n" + rows_.join("\n");
   hud.style.display = "block";
   hud.textContent = out;
