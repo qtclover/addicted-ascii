@@ -7,20 +7,47 @@ in plain Canvas2D.
 
 No build step, no dependencies. Open `index.html`.
 
+Drop a `music.mp4` beside it for the soundtrack — the entry gate is the click
+browsers require before audio may start, and it fades in over four seconds. With no
+file there, the gate still opens and the piece runs silent.
+
+## The gate
+
+`[ enter ]` is drawn into the source canvas like everything else, so it reaches the
+screen as hex glyphs through the same grid, colour chain and post-effects. The DOM
+holds one transparent full-screen button over it — something to click, tab to and
+read out, nothing to paint.
+
+It is a door with a job. Behind it the piece is drawn in full, held at a tenth of its
+brightness: the donut still tumbles and a frame still costs exactly what it will cost
+afterwards, so auto-quality can walk to this machine's resolution somewhere you can
+barely see it. Every scale change re-tiles the whole mosaic, so that walk runs to
+convergence before the door opens and then stops for good — what you enter on is what
+you keep. Entering raises the field from a tenth to full over 1.4s; it is the same
+frame throughout, so there is nothing to swap in and nothing to jump.
+
 ## Query flags
 
 | Flag | Effect |
 |---|---|
-| `?fps` | Frame time, grid size and live render scale in the corner |
+| `?fps` | Frame interval, fps, script time, grid size and live render scale in the corner |
 | `?selftest` | Assert sweep over every render mode, blur type, anim style and post-effect. Logs `PASS`/`FAIL` to the console |
+| `?diag` | Every re-tile with the reason that caused it, marked if it happened after entry. A visible jump is always one of these |
+| `?bench` | Sweeps render scale x cell size, then breaks one frame into stages and prices each post-effect. Flushed with a pixel readback, because canvas work is deferred and unflushed numbers lie |
+| `?q=sharp` / `?q=smooth` | Pin the trade: never degrade, or buy framerate with resolution. Default walks the ladder |
+| `?fx=off` | Start on the second rung: no post-effects, no backdrop haze |
 
 ## How it works
 
 1. `drawSource()` composes the frame that gets ASCII-ified — shaded torus, wordmark,
    tilt, mirrored floor reflection. Stands in for the photo the original effect uses.
-2. The source is downscaled to one pixel per cell (the GPU box-filters it far faster
-   than a JS sampling loop), then each cell becomes a glyph or shape.
-3. Colour chain, blur, post-effects, then the composite.
+2. The source is downscaled to one pixel per cell by repeated halving (bilinear at
+   each step is a real box filter, and far cheaper than one `imageSmoothingQuality:
+   "high"` draw), then each cell becomes a glyph or shape.
+3. Glyph-only modes composite the layer in JS and upload it with one `putImageData`.
+   A canvas-to-canvas `drawImage` costs ~2µs whatever its size, and a frame is
+   thousands of them.
+4. Colour chain, blur, post-effects, then the composite.
 
 ## Parameters
 
@@ -29,10 +56,13 @@ Everything lives in the `PARAMS` object at the top of `index.html`.
 | Key | Notes |
 |---|---|
 | `renderMode` | 25 of them — `hexdump`, `characters`, `braille`, `matrix`, `contour`, `halfblocks`, … |
-| `cellSize` | Grid pitch in device pixels. Smaller = finer, quadratically more work |
-| `maxDpr` | Render at device pixels for crisp glyphs. Capped by `PIXEL_BUDGET` |
-| `autoQuality` / `targetMs` / `minScale` | Measures real frame cost, walks the render scale to fit, never past the floor |
+| `cellSize` | Grid pitch in device pixels, and the sharpness knob that matters. Not quadratic in practice — most of a frame is fixed cost, so at 1920x945 the whole range is 10.9ms (8px) to 18.4ms (3px). Default 4: most of the sharpness inside the 60fps ceiling. At 3 it stops reading as a glyph field |
+| `maxDpr` | Render at device pixels for crisp glyphs. Capped by `pixelBudget` |
+| `pixelBudget` | **The sharpness knob.** Backing-store cap. At `9e6` a 3440x1440 or 4K window renders 1:1 with no CSS upscaling (~45fps there); `2.4e6` gives 8.6px cells at ~80fps |
+| `autoQuality` / `targetMs` / `floorMs` / `minScale` | Degrades in one order, cheapest loss first: **post-effects and the blurred backdrop**, then **grid detail** (`cellSize` up its ladder), then **resolution** (`renderScale`, quantised to 1/k). Atmosphere costs no geometry and does not even re-tile; resolution is last because the browser then stretches the result and everything goes soft. Measured on Gecko at 1.72Mpx: 58ms with effects, 22ms without, same pixels and same cells — 17fps to 45fps for the glow. Chromium renders the lot inside budget and never reaches the first rung. The walk runs behind the gate, discards 8 frames after each change (a realloc is not a fair sample), converges, and then stops for good |
 | `pauseWhenIdle` | Hidden or unfocused: the loop stops rescheduling, nothing runs at all |
+| `maxFps` | Frame ceiling once you are past the gate. A 144Hz panel was doing 2.4x the work for a shimmer that does not read any faster. Uncapped behind the gate, where auto-quality still needs the true cost of a frame |
+| `linkSize` | Contact line height. Below eight cells a glyph has no letterform left after the grid, so rather than shrink past that the line stacks into a column — which needs only the width of the longest word |
 | `marginX` / `marginY` / `tilt` | Lockup placement and lean |
 | `pfx` | 9 post-effects, each `{enabled, intensity}` |
 | `animStyle` | `shimmer`, `wave`, `pulse`, `ripple`, `flicker` |
