@@ -165,8 +165,15 @@ let LUM = null, COL = null;
    targets cannot disagree about what the viewport is — they used to, by the height of
    a phone's toolbars. It also means a host that reports a zero-sized window (an
    unlaid-out preview pane) falls back instead of computing a DPX of 320. */
+/* Portrait is a different composition, not the same one squeezed. The piece is laid
+   out for a wide field: the lockup sits bottom right against its own margin and the
+   contact line sits bottom left, with the empty middle carrying it. On a phone that
+   arrangement collapses — the two ends meet, and everything above them is dead black.
+   So a tall viewport gets its own arrangement instead, centred and stacked. */
+let PORTRAIT = false;
+const PORTRAIT_AT = 0.8;      /* width/height below this is treated as tall */
 let vpW = 0, vpH = 0;
-function measureViewport() {
+let measureViewport = function () {
   const r = cv.getBoundingClientRect();
   vpW = Math.max(1, Math.round(r.width) || innerWidth || 320);
   vpH = Math.max(1, Math.round(r.height) || innerHeight || 240);
@@ -199,6 +206,7 @@ const quantScale = (v) => 1 / Math.max(1, Math.round(1 / Math.max(0.05, v)));
 function snapDivisor(scale, devPr) { return Math.max(1, Math.round(1 / Math.max(0.05, scale * devPr))); }
 function resize() {
   measureViewport();
+  PORTRAIT = vpW / vpH < PORTRAIT_AT;
   const dpr = backingDpr(vpW, vpH, devicePixelRatio, renderScale);
   if (dpr < 1) {                       /* upscaling: land on an integer ratio */
     const k = snapDivisor(renderScale, Math.min(P.maxDpr || 1, devicePixelRatio || 1));
@@ -560,7 +568,14 @@ let grp = null, gpx = null, GW = 0, GH = 0, GPAD = 0;
 const LOCK = { cx: 0.5, cy: 0.5, w: 1, h: 1 };
 const linksEl = document.getElementById("links");
 function buildGroup(t) {
-  const fs  = Math.round(Math.min(H * 0.165, W * 0.098));
+  /* Landscape is height-bound and the width term only stops a short wide window
+     running the lockup off the edge. Portrait is width-bound, and at 0.098 the
+     wordmark came out at 48% of a phone's width with four fifths of the screen
+     empty — so the width term opens up and the height term takes over the job of
+     keeping it in proportion. */
+  const fs  = PORTRAIT
+    ? Math.round(Math.min(H * 0.085, W * 0.150))
+    : Math.round(Math.min(H * 0.165, W * 0.098));
   const box = Math.round(fs * 1.45);
   const gap = Math.round(fs * 0.28);
   const font = fs + 'px ' + (FONT_OK ? '"Instrument Serif", ' : '') + 'Georgia, "Times New Roman", serif';
@@ -661,9 +676,18 @@ function drawSource(t) {
   const rc = reflection(g);
   const gapY = Math.round(GH * 0.01), rh = GH * 0.78;
   /* +GPAD/-GPAD: place the ink edges at the margins, not the padded buffer edges */
-  LOCK.cx = (W * (1 - P.marginX) - GW / 2 + GPAD) / W;
-  LOCK.cy = (H * (1 - P.marginY) - (GH / 2 + gapY + rh) + GPAD) / H;
+  if (PORTRAIT) {
+    /* centred, and high enough that the reflection and the contact line below it
+       land as one stack around the optical centre rather than on the floor */
+    LOCK.cx = 0.5;
+    LOCK.cy = 0.40;
+  } else {
+    LOCK.cx = (W * (1 - P.marginX) - GW / 2 + GPAD) / W;
+    LOCK.cy = (H * (1 - P.marginY) - (GH / 2 + gapY + rh) + GPAD) / H;
+  }
   LOCK.w = GW / W; LOCK.h = GH / H;
+  /* where the reflection's tail lands, so the contact line can sit under it */
+  LOCK.floor = (LOCK.cy * H + GH / 2 + gapY + rh) / H;
   /* Behind the door the piece is drawn in full — the donut still tumbles and the
      grid still costs exactly what it will cost afterwards, which is the only way
      auto-quality can settle on an honest resolution before anyone is looking — but
@@ -799,10 +823,13 @@ function drawLinks(s) {
   const perPxLine = inline.reduce((w, p) => w + (p.el ? slotOf(p.el) : wide(p.t)), 0) / 100;
   const perPxCol = Math.max(...copyEls.map(slotOf)) / 100;
 
-  /* The line has to end before the lockup begins, or a narrow window runs the
-     contact words straight into the donut. */
-  const lineWant = Math.round(Math.min(H * P.linkSize, W * P.linkSize * 0.6));
-  const room = Math.max(0, (LOCK.cx - LOCK.w / 2) * W - x0 - lineWant * 0.8);
+  /* Landscape: the line shares the floor with the lockup and has to stop before it.
+     Portrait: the lockup is above it and the whole width is its own. */
+  const lineWant = Math.round(PORTRAIT ? Math.min(H * P.linkSize * 0.62, W * P.linkSize * 1.5)
+                                       : Math.min(H * P.linkSize, W * P.linkSize * 0.6));
+  const room = PORTRAIT
+    ? Math.max(0, W - 2 * x0)
+    : Math.max(0, (LOCK.cx - LOCK.w / 2) * W - x0 - lineWant * 0.8);
   const floorPx = P.cellSize * LINK_MIN_CELLS;
   const lineFs = Math.min(lineWant, Math.floor(room / perPxLine));
 
@@ -826,12 +853,20 @@ function drawLinks(s) {
 
   /* sit the ink on the floor line, not the baseline — the brackets hang below it
      and were being clipped by the bottom edge */
-  const base = H * (1 - P.marginY) - fs * 0.14;
   const lead = fs * 1.35;
+  /* Portrait hangs the line under the reflection rather than on the bottom margin,
+     so the lockup and its contact words read as one centred group with the empty
+     field around them, instead of two things sharing a floor. */
+  const base = PORTRAIT
+    ? Math.min(H * (1 - P.marginY) - fs * 0.14,
+               LOCK.floor * H + fs * 1.5 + (rows.length - 1) * lead)
+    : H * (1 - P.marginY) - fs * 0.14;
   LINK_HITS.length = 0;
   rows.forEach((row, r) => {
     const y = base - (rows.length - 1 - r) * lead;
-    let x = x0;
+    /* centred in portrait, against the left margin in landscape */
+    const rowW = row.reduce((w, q) => w + (q.el ? slotOf(q.el) : wide(q.t)), 0);
+    let x = PORTRAIT ? Math.round((W - rowW) / 2) : x0;
     for (const p of row) {
       const w = wide(p.t);                       /* the ink */
       const slot = p.el ? slotOf(p.el) : w;      /* the space it is allotted */
@@ -2233,7 +2268,10 @@ function selftest() {
     };
     P.blurCenterX = LOCK.cx * 100; P.blurCenterY = LOCK.cy * 100;
     frame(1.7); const focused = detail();
-    P.blurCenterX = 100 - LOCK.cx * 100; P.blurCenterY = 100 - LOCK.cy * 100;
+    /* the opposite corner, not the mirrored point: with the lockup centred — which
+       is where a portrait viewport puts it — mirroring barely moves the disc, and
+       the "defocused" frame came back nearly as sharp as the focused one */
+    P.blurCenterX = LOCK.cx < 0.5 ? 100 : 0; P.blurCenterY = LOCK.cy < 0.5 ? 100 : 0;
     frame(1.7); const defocused = detail();
     ok(focused > defocused * 1.5,
        "lens focus disc keeps detail the rim loses (" + focused + " vs " + defocused + ")");
@@ -2314,8 +2352,16 @@ function selftest() {
     {
       const last = LINK_HITS[LINK_HITS.length - 1];
       const lockLeft = (LOCK.cx - LOCK.w / 2) * W;
-      ok(last.x + last.w < lockLeft, "contact line clears the lockup (" +
-         (((last.x + last.w) | 0) + " < " + (lockLeft | 0)) + ")");
+      /* Landscape shares the floor with the lockup, so the line must stop before it.
+         Portrait stacks them, so the line clears it by sitting under the reflection
+         instead — the same requirement, answered by a different arrangement. */
+      if (PORTRAIT) {
+        ok(LINK_HITS.every(h => h.y > LOCK.floor * H - 2),
+           "contact line hangs below the reflection (portrait)");
+      } else {
+        ok(last.x + last.w < lockLeft, "contact line clears the lockup (" +
+           (((last.x + last.w) | 0) + " < " + (lockLeft | 0)) + ")");
+      }
       ok(last.y + last.h <= H + 1, "contact line stays inside the bottom edge");
     }
     /* "copied!" must replace the word, and the boxes must follow when that changes
@@ -2404,10 +2450,17 @@ function selftest() {
         for (let i = 0; i < d.length; i += 4) if (d[i] > 40) n++;
         return n;
       };
+      /* Pinned to the landscape arrangement: the sample box is the middle of the
+         screen, which is exactly where a portrait composition puts the lockup, and
+         then "lit" has more ink there than "shut" for reasons that have nothing to
+         do with the door. What the door does is identical either way. */
+      const wasPortrait = PORTRAIT;
+      PORTRAIT = false; grp = null;
       enterAt = 0; drawSource(1.7);
       const shut = ink();
       enterAt = performance.now() - 1e6; drawSource(1.7);
       const open = ink();
+      PORTRAIT = wasPortrait; grp = null;
       ok(shut > 200, "the door is painted into the source, not the DOM (" + shut + " lit px)");
       ok(open * 4 < shut, "and it is gone once the piece is lit (" + open + " vs " + shut + ")");
     }
@@ -2484,6 +2537,44 @@ function selftest() {
     if (wasLinksInert) linksEl.setAttribute("inert", ""); else linksEl.removeAttribute("inert");
     if (wasGateInert) gateEl.setAttribute("inert", ""); else gateEl.removeAttribute("inert");
     enterAt = wasEnterAt;
+  }
+
+  /* A tall viewport is a different composition, and it had no assertions at all —
+     which is how it stayed a landscape layout squeezed into portrait until someone
+     opened it on a phone. Drives the real resize path at each size, so the grid,
+     the backing store and the copy targets are rebuilt the way they are in life. */
+  {
+    const realMeasure = measureViewport;
+    const at = (w, h, fn) => {
+      measureViewport = () => { vpW = w; vpH = h; };
+      resize(); enterAt = performance.now() - 1e6; drawSource(2.1);
+      try { return fn(); } finally { measureViewport = realMeasure; }
+    };
+    const phones = [[375, 812], [390, 844], [360, 740], [320, 568], [412, 915]];
+    const bad = [];
+    for (const [w, h] of phones) {
+      const r = at(w, h, () => ({
+        portrait: PORTRAIT,
+        centred: Math.abs(LOCK.cx - 0.5) < 0.01,
+        wide: LOCK.w >= 0.6,
+        lockInside: (LOCK.cx - LOCK.w / 2) * W >= -1 && (LOCK.cx + LOCK.w / 2) * W <= W + 1,
+        under: LINK_HITS.every(x => x.y > LOCK.floor * H - 2),
+        inside: LINK_HITS.every(x => x.x >= -1 && x.x + x.w <= W + 1 && x.y + x.h <= H + 1),
+        legible: LINK_HITS[0].h / 1.3 / P.cellSize >= LINK_MIN_CELLS
+      }));
+      for (const k of Object.keys(r)) if (!r[k]) bad.push(w + "x" + h + ":" + k);
+    }
+    ok(bad.length === 0, "the portrait composition holds on every phone: " + bad.join(", "));
+
+    /* and a wide window must not be dragged into it */
+    const land = at(1280, 800, () => ({
+      notPortrait: !PORTRAIT,
+      rightAnchored: LOCK.cx > 0.55,
+      clears: LINK_HITS.every(x => x.x + x.w < (LOCK.cx - LOCK.w / 2) * W + 1)
+    }));
+    ok(land.notPortrait && land.rightAnchored && land.clears,
+       "a landscape window keeps the arrangement it had: " + JSON.stringify(land));
+    measureViewport = realMeasure; resize();
   }
 
   /* the lockup buffer has to hold its own ink: strokeText widens past measureText,
