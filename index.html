@@ -593,7 +593,13 @@ function buildGroup(t) {
      ("g", "addicted.") had its tail cut off. Size from the real ink box, pad it,
      then shift the lockup back so marginX still means the ink and not the padding. */
   const pad = Math.ceil(fs * 0.03) + 2;
-  const drop = Math.max(Math.round(fs * 0.10), desc);   /* baseline above the box floor */
+  /* Sit the word on the donut's own centre line, not on the floor of the box. The
+     donut is drawn centred in the group, so its middle is at gh/2; the baseline used
+     to be pinned to the bottom margin instead, which put the word's ink centre about
+     0.26 of the font size below it — with "addicted" carrying no descenders at all,
+     that reads as the wordmark hanging low beside the mark. Clamped so the ink can
+     never leave the padded box however the metrics come back. */
+  const inkMid = gh => gh / 2 + (asc - desc) / 2;
   const gw = box + gap + tw + pad * 2;
   const gh = Math.max(box, Math.round(fs * 1.35), asc + desc + Math.round(fs * 0.10)) + pad * 2;
   GPAD = pad;
@@ -617,8 +623,9 @@ function buildGroup(t) {
   gpx.strokeStyle = "#fff";
   gpx.lineJoin = "round";
   gpx.lineWidth = fs * 0.016;
-  gpx.fillText(P.word, pad + box + gap, gh - pad - drop);
-  gpx.strokeText(P.word, pad + box + gap, gh - pad - drop);
+  const baseline = clamp(inkMid(gh), pad + asc, gh - pad - desc);
+  gpx.fillText(P.word, pad + box + gap, baseline);
+  gpx.strokeText(P.word, pad + box + gap, baseline);
   return grp;
 }
 
@@ -2590,6 +2597,28 @@ function selftest() {
     ok(land.notPortrait && land.rightAnchored && land.clears,
        "a landscape window keeps the arrangement it had: " + JSON.stringify(land));
     measureViewport = realMeasure; resize();
+  }
+
+  /* The wordmark sits on the donut's centre line. It used to sit on the floor of the
+     group box, which put it about a quarter of the font size low — invisible until
+     someone looked at the lockup on its own and said the word hangs below the mark. */
+  {
+    buildGroup(2.1);
+    const d = gpx.getImageData(0, 0, GW, GH).data;
+    const midOf = (x0, x1) => {
+      let top = -1, bot = -1;
+      for (let y = 0; y < GH; y++) {
+        let lit = false;
+        for (let x = x0; x < x1; x++) if (d[(y * GW + x) * 4 + 3] > 24) { lit = true; break; }
+        if (lit) { if (top < 0) top = y; bot = y; }
+      }
+      return top < 0 ? null : (top + bot) / 2;
+    };
+    const split = Math.round(GW * 0.30);
+    const donutMid = midOf(0, split), wordMid = midOf(split, GW);
+    const off = donutMid === null || wordMid === null ? 1e9 : Math.abs(wordMid - donutMid);
+    ok(off <= GH * 0.03, "the wordmark rides the donut's centre line (" + off.toFixed(1) +
+       "px of " + GH + ")");
   }
 
   /* the lockup buffer has to hold its own ink: strokeText widens past measureText,
