@@ -1,0 +1,246 @@
+[
+  {
+    "width": 1440,
+    "height": 900,
+    "dpr": 1,
+    "state": {
+      "hud": "",
+      "FONT_OK": true,
+      "W": 1440,
+      "H": 900,
+      "cols": 480,
+      "rows": 300,
+      "cell": 4,
+      "pitch": 3,
+      "fonts": [
+        {
+          "family": "Instrument Serif",
+          "status": "unloaded"
+        },
+        {
+          "family": "Instrument Serif",
+          "status": "loaded"
+        }
+      ],
+      "entered": false
+    },
+    "bracket": {
+      "pct": 11.851851851851851,
+      "mean": 0.07343676472772602,
+      "word": 0.17711082868495692
+    },
+    "logs": [
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: desktop text keeps 6 x-height cells through the quality ladder (192708 checks, worst 6.00 at contact 640x480@2 scale 1)"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: phone text keeps 6 x-height cells through the quality ladder (148356 checks, worst 6.00 at gate 320x480@2 scale 0.5)"
+      },
+      {
+        "type": "log",
+        "text": "%cSELFTEST PASS — 139 passed, 0 failed font-weight:bold;color:#5f5"
+      }
+    ]
+  },
+  {
+    "width": 800,
+    "height": 600,
+    "dpr": 1,
+    "state": {
+      "hud": "",
+      "FONT_OK": true,
+      "W": 800,
+      "H": 600,
+      "cols": 267,
+      "rows": 200,
+      "cell": 4,
+      "pitch": 3,
+      "fonts": [
+        {
+          "family": "Instrument Serif",
+          "status": "unloaded"
+        },
+        {
+          "family": "Instrument Serif",
+          "status": "loaded"
+        }
+      ],
+      "entered": false
+    },
+    "bracket": {
+      "pct": 11.228070175438596,
+      "mean": 0.08180126312531923,
+      "word": 0.17221320143035382
+    },
+    "logs": [
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: desktop text keeps 6 x-height cells through the quality ladder (192708 checks, worst 6.00 at contact 640x480@2 scale 1)"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: phone text keeps 6 x-height cells through the quality ladder (148356 checks, worst 6.00 at gate 320x480@2 scale 0.5)"
+      },
+      {
+        "type": "log",
+        "text": "%cSELFTEST PASS — 139 passed, 0 failed font-weight:bold;color:#5f5"
+      }
+    ]
+  },
+  {
+    "width": 1280,
+    "height": 720,
+    "dpr": 1,
+    "state": {
+      "hud": "",
+      "FONT_OK": true,
+      "W": 1280,
+      "H": 720,
+      "cols": 427,
+      "rows": 240,
+      "cell": 4,
+      "pitch": 3,
+      "fonts": [
+        {
+          "family": "Instrument Serif",
+          "status": "unloaded"
+        },
+        {
+          "family": "Instrument Serif",
+          "status": "loaded"
+        }
+      ],
+      "entered": false
+    },
+    "bracket": {
+      "pct": 11.507936507936508,
+      "mean": 0.07328267726633284,
+      "word": 0.16775487367571754
+    },
+    "logs": [
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: desktop text keeps 6 x-height cells through the quality ladder (192708 checks, worst 6.00 at contact 640x480@2 scale 1)"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: phone text keeps 6 x-height cells through the quality ladder (148356 checks, worst 6.00 at gate 320x480@2 scale 0.5)"
+      },
+      {
+        "type": "log",
+        "text": "%cSELFTEST PASS — 139 passed, 0 failed font-weight:bold;color:#5f5"
+      }
+    ]
+  },
+  {
+    "width": 393,
+    "height": 852,
+    "dpr": 3,
+    "state": {
+      "hud": "",
+      "FONT_OK": true,
+      "W": 786,
+      "H": 1704,
+      "cols": 197,
+      "rows": 426,
+      "cell": 4,
+      "pitch": 4,
+      "fonts": [
+        {
+          "family": "Instrument Serif",
+          "status": "unloaded"
+        },
+        {
+          "family": "Instrument Serif",
+          "status": "loaded"
+        }
+      ],
+      "entered": false
+    },
+    "bracket": {
+      "pct": 11.278195488721805,
+      "mean": 0.08243820261686369,
+      "word": 0.17062404490381938
+    },
+    "logs": [
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "warning",
+        "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: desktop text keeps 6 x-height cells through the quality ladder (192708 checks, worst 6.00 at contact 640x480@2 scale 1)"
+      },
+      {
+        "type": "log",
+        "text": "LEGIBILITY: phone text keeps 6 x-height cells through the quality ladder (148356 checks, worst 6.00 at gate 320x480@2 scale 0.5)"
+      },
+      {
+        "type": "log",
+        "text": "%cSELFTEST PASS — 139 passed, 0 failed font-weight:bold;color:#5f5"
+      }
+    ]
+  }
+]

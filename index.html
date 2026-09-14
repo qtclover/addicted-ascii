@@ -6,7 +6,8 @@
 <title>addicted</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:wght@400&display=swap" rel="stylesheet">
+<link id="font-style" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:wght@400&display=swap" rel="stylesheet" media="print"
+      onload="this.media='all';this.dataset.settled='1'" onerror="this.dataset.settled='1'">
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
   /* svh, not vh: vh is the *large* viewport on mobile — the height you get once the
@@ -113,6 +114,9 @@ const PARAMS = {
   linkSize: 0.095,    /* contact line height, fraction of frame height. Glyph cells are
                          coarse: below ~0.075 the grid eats the words. 0.115 collides
                          with the lockup at 16:9 */
+  linkFrameStroke: 0.1, /* bracket/separator stroke reinforcement, in grid cells */
+  minXCells: 6,       /* measured x-height floor for every source text face */
+  portraitSlop: 2,    /* CSS-pixel deadband around the portrait breakpoint on resize */
   marginY: 0.03,      /* reflection tail to bottom edge       */
   maxDpr: 2,          /* render at device pixels: finer grid, crisp glyphs */
   pixelBudget: 9e6,   /* backing-store cap. This is the sharpness knob: at 9e6 a
@@ -157,6 +161,8 @@ const cv = document.getElementById("c");
 const ctx = cv.getContext("2d", { alpha: false });
 const hud = document.getElementById("hud");
 let W = 0, H = 0, cols = 0, rows = 0, DPX = 1;
+let cellPx = P.cellSize;       /* effective pitch; quality may request, never break the floor */
+const textMeasure = mk(1, 1).getContext("2d");
 let src, sctx, glyph, gctx, tmp, tctx, bloomC, bctx, small, smctx;
 let LUM = null, COL = null;
 
@@ -172,6 +178,10 @@ let LUM = null, COL = null;
    So a tall viewport gets its own arrangement instead, centred and stacked. */
 let PORTRAIT = false;
 const PORTRAIT_AT = 0.8;      /* width/height below this is treated as tall */
+function portraitMode(w, h, previous = null) {
+  const edge = h * PORTRAIT_AT;
+  return previous === null ? w < edge : w < edge + (previous ? P.portraitSlop : -P.portraitSlop);
+}
 let vpW = 0, vpH = 0;
 let measureViewport = function () {
   const r = cv.getBoundingClientRect();
@@ -204,18 +214,20 @@ const quantScale = (v) => 1 / Math.max(1, Math.round(1 / Math.max(0.05, v)));
    So the store is snapped to an exact 1/k of the window rather than an arbitrary
    fraction of it: k is the only quantity the eye can see here. */
 function snapDivisor(scale, devPr) { return Math.max(1, Math.round(1 / Math.max(0.05, scale * devPr))); }
-function resize() {
-  measureViewport();
-  PORTRAIT = vpW / vpH < PORTRAIT_AT;
-  const dpr = backingDpr(vpW, vpH, devicePixelRatio, renderScale);
+function backingSize(vw, vh, devPr, scale) {
+  const dpr = backingDpr(vw, vh, devPr, scale);
   if (dpr < 1) {                       /* upscaling: land on an integer ratio */
-    const k = snapDivisor(renderScale, Math.min(P.maxDpr || 1, devicePixelRatio || 1));
-    W = Math.max(320, Math.round(vpW / k));
-    H = Math.max(240, Math.round(vpH / k));
-  } else {
-    W = Math.max(320, (vpW * dpr) | 0);
-    H = Math.max(240, (vpH * dpr) | 0);
+    const k = snapDivisor(scale, Math.min(P.maxDpr || 1, devPr || 1));
+    return { w: Math.max(320, Math.round(vw / k)), h: Math.max(240, Math.round(vh / k)) };
   }
+  return { w: Math.max(320, (vw * dpr) | 0), h: Math.max(240, (vh * dpr) | 0) };
+}
+function resize() {
+  const previous = src ? PORTRAIT : null;
+  measureViewport();
+  PORTRAIT = portraitMode(vpW, vpH, previous);
+  const backing = backingSize(vpW, vpH, devicePixelRatio, renderScale);
+  W = backing.w; H = backing.h;
   /* smoothing is what turned hard-edged glyphs into grey mush; with the integer
      snap above, nearest neighbour gives clean whole-pixel cells instead */
   cv.style.imageRendering = W < vpW ? "pixelated" : "auto";
@@ -224,8 +236,9 @@ function resize() {
      Nothing has moved, so leave it alone — but "nothing" has to include the grid
      pitch. Checking only the canvas dimensions made cellSize changes silently do
      nothing, because cols and rows are rebuilt below this line. */
-  if (src && cv.width === W && cv.height === H && lastCell === P.cellSize) { watchDpr(); return; }
-  lastCell = P.cellSize;
+  cellPx = textLayoutFor(W, H, PORTRAIT, P.cellSize).pitch;
+  if (src && cv.width === W && cv.height === H && lastCell === cellPx) { watchDpr(); return; }
+  lastCell = cellPx;
   cv.width = W; cv.height = H;
   DPX = W / vpW;                       /* device px per CSS px — post-effects size themselves in CSS px */
   /* only `small` and `sub` are ever read back; willReadFrequently on the rest
@@ -236,7 +249,7 @@ function resize() {
   bloomC = mk(W >> 2, H >> 2); bctx = bloomC.getContext("2d");
   chAcc = null; hgrid = null;          /* lazily rebuilt by the effects that need them */
   mipA = null; mipB = null;            /* downscale ping-pong, rebuilt on first sample */
-  cols = Math.ceil(W / P.cellSize); rows = Math.ceil(H / P.cellSize);
+  cols = Math.ceil(W / cellPx); rows = Math.ceil(H / cellPx);
   small = mk(cols, rows); smctx = small.getContext("2d", { willReadFrequently: true });
   sub = null;
   LUM = new Float32Array(cols * rows);
@@ -545,8 +558,14 @@ function drawDonut(box, A, B) {
    lands and a frame drawn after are visibly different widths. Boot waits on this
    (with a timeout, so offline still starts) instead of letting it swap mid-run. */
 let FONT_OK = false;
+let FONT_LOCKED = false;
 const FONT_READY = (async () => {
   try {
+    const sheet = document.getElementById("font-style");
+    if (!sheet.dataset.settled) await new Promise(resolve => {
+      sheet.addEventListener("load", resolve, { once: true });
+      sheet.addEventListener("error", resolve, { once: true });
+    });
     await document.fonts.load('64px "Instrument Serif"');
     await document.fonts.ready;
     /* document.fonts.check() answers the wrong question: it returns true when the
@@ -558,16 +577,16 @@ const FONT_READY = (async () => {
       c.font = '64px ' + family;
       return c.measureText("addicted").width;
     };
-    FONT_OK = width('"Instrument Serif", Georgia, serif') !== width('Georgia, serif');
+    if (!FONT_LOCKED) FONT_OK = width('"Instrument Serif", Georgia, serif') !== width('Georgia, serif');
   } catch (e) { /* offline: the serif fallback still reads right */ }
-  grp = null;
+  if (!FONT_LOCKED) grp = null;
 })();
 
 /* [donut] addicted, transparent background */
 let grp = null, gpx = null, GW = 0, GH = 0, GPAD = 0;
 const LOCK = { cx: 0.5, cy: 0.5, w: 1, h: 1 };
 const linksEl = document.getElementById("links");
-function buildGroup(t) {
+function groupMetrics() {
   /* Landscape is height-bound and the width term only stops a short wide window
      running the lockup off the edge. Portrait is width-bound, and at 0.098 the
      wordmark came out at 48% of a phone's width with four fifths of the screen
@@ -579,14 +598,14 @@ function buildGroup(t) {
   const box = Math.round(fs * 1.45);
   const gap = Math.round(fs * 0.28);
   const font = fs + 'px ' + (FONT_OK ? '"Instrument Serif", ' : '') + 'Georgia, "Times New Roman", serif';
-  tctx.save();
-  tctx.font = font;
-  if ("letterSpacing" in tctx) tctx.letterSpacing = (fs * 0.012).toFixed(2) + "px";
-  const met = tctx.measureText(P.word);
+  textMeasure.save();
+  textMeasure.font = font;
+  if ("letterSpacing" in textMeasure) textMeasure.letterSpacing = (fs * 0.012).toFixed(2) + "px";
+  const met = textMeasure.measureText(P.word);
   const tw = Math.ceil(met.width);
   const asc  = Math.ceil(met.actualBoundingBoxAscent  || fs * 0.75);
   const desc = Math.ceil(met.actualBoundingBoxDescent || fs * 0.25);
-  tctx.restore();
+  textMeasure.restore();
   /* measureText's width excludes the stroke and the last glyph's right side
      bearing, so the final letter used to land within a pixel of the buffer edge —
      and the box was a flat multiple of the font size, so a word with a descender
@@ -599,9 +618,13 @@ function buildGroup(t) {
      0.26 of the font size below it — with "addicted" carrying no descenders at all,
      that reads as the wordmark hanging low beside the mark. Clamped so the ink can
      never leave the padded box however the metrics come back. */
-  const inkMid = gh => gh / 2 + (asc - desc) / 2;
   const gw = box + gap + tw + pad * 2;
   const gh = Math.max(box, Math.round(fs * 1.35), asc + desc + Math.round(fs * 0.10)) + pad * 2;
+  return { fs, box, gap, font, asc, desc, pad, gw, gh };
+}
+function buildGroup(t) {
+  const { fs, box, gap, font, asc, desc, pad, gw, gh } = groupMetrics();
+  const inkMid = gh => gh / 2 + (asc - desc) / 2;
   GPAD = pad;
   if (!grp || GW !== gw || GH !== gh) { grp = mk(gw, gh); gpx = grp.getContext("2d"); GW = gw; GH = gh; }
   gpx.setTransform(1,0,0,1,0,0);
@@ -673,14 +696,7 @@ function reflectionRamp(rc, w, h) {
   return refl2;
 }
 
-function drawSource(t) {
-  const s = sctx;
-  s.setTransform(1,0,0,1,0,0);
-  s.globalAlpha = 1; s.globalCompositeOperation = "source-over"; s.filter = "none";
-  s.fillStyle = "#000"; s.fillRect(0, 0, W, H);
-
-  const g = buildGroup(t);
-  const rc = reflection(g);
+function placeLockup(GW, GH, GPAD) {
   const gapY = Math.round(GH * 0.01), rh = GH * 0.78;
   /* +GPAD/-GPAD: place the ink edges at the margins, not the padded buffer edges */
   if (PORTRAIT) {
@@ -695,6 +711,16 @@ function drawSource(t) {
   LOCK.w = GW / W; LOCK.h = GH / H;
   /* where the reflection's tail lands, so the contact line can sit under it */
   LOCK.floor = (LOCK.cy * H + GH / 2 + gapY + rh) / H;
+}
+function drawSource(t) {
+  const s = sctx;
+  s.setTransform(1,0,0,1,0,0);
+  s.globalAlpha = 1; s.globalCompositeOperation = "source-over"; s.filter = "none";
+  s.fillStyle = "#000"; s.fillRect(0, 0, W, H);
+  const g = buildGroup(t);
+  const rc = reflection(g);
+  const gapY = Math.round(GH * 0.01), rh = GH * 0.78;
+  placeLockup(GW, GH, GPAD);
   /* Behind the door the piece is drawn in full — the donut still tumbles and the
      grid still costs exactly what it will cost afterwards, which is the only way
      auto-quality can settle on an honest resolution before anyone is looking — but
@@ -734,9 +760,24 @@ function gateArt() {
   const hot = !!gateEl._hot;
   const key = W + "x" + H + "|" + P.cellSize + "|" + (hot ? 1 : 0);
   if (gateArtC && gateArtKey === key) return gateArtC;
-
+  const { fs, wide, set } = gateFont();
+  const glow = hot ? fs * 0.30 : 0;
+  const pad = Math.ceil(glow * 2 + fs * 0.2);
+  const cw = Math.ceil(wide) + pad * 2, ch = Math.ceil(fs * 1.6) + pad * 2;
+  const c = mk(cw, ch), x = c.getContext("2d");
+  set(x, fs, 0.12);
+  x.textAlign = "center"; x.textBaseline = "middle";
+  x.fillStyle = "#ffffff";
+  x.shadowColor = hot ? "rgba(255,255,255,0.85)" : "transparent";
+  x.shadowBlur = glow;
+  x.fillText("[ enter ]", cw / 2, ch / 2);
+  gateArtC = { c, dx: Math.round(W / 2 - cw / 2), dy: Math.round(H / 2 - ch / 2) };
+  gateArtKey = key;
+  return gateArtC;
+}
+function gateFont() {
   const face = 'px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
-  const m = mk(1, 1).getContext("2d");
+  const m = textMeasure;
   const set = (c, px, track) => {
     c.font = "700 " + px + face;
     if ("letterSpacing" in c) c.letterSpacing = (px * track).toFixed(2) + "px";
@@ -751,23 +792,7 @@ function gateArt() {
   const want = m.measureText("[ enter ]").width;
   if (want > room) { fs = Math.max(P.cellSize * LINK_MIN_CELLS, Math.floor(fs * room / want)); set(m, fs, 0.12); }
   const wide = m.measureText("[ enter ]").width;
-
-  const glow = hot ? fs * 0.30 : 0;
-  const pad = Math.ceil(glow * 2 + fs * 0.2);
-  const cw = Math.ceil(wide) + pad * 2, ch = Math.ceil(fs * 1.6) + pad * 2;
-  const c = mk(cw, ch), x = c.getContext("2d");
-  set(x, fs, 0.12);
-  x.textAlign = "center"; x.textBaseline = "middle";
-  x.fillStyle = "#ffffff";
-  x.shadowColor = hot ? "rgba(255,255,255,0.85)" : "transparent";
-  x.shadowBlur = glow;
-  /* the word alone. What it does to the volume is on the button's label, where a
-     screen reader gets it and the field does not have to carry a second line */
-  x.fillText("[ enter ]", cw / 2, ch / 2);
-
-  gateArtC = { c, dx: Math.round(W / 2 - cw / 2), dy: Math.round(H / 2 - ch / 2) };
-  gateArtKey = key;
-  return gateArtC;
+  return { fs, wide, set, font: m.font };
 }
 function drawGate(s, a) {
   const g = gateArt();
@@ -805,7 +830,7 @@ const LINK_MIN_CELLS = 8;
    with margin, and still around 40% of the words' ink, which is what subordinate
    means once the grid has had its say. */
 let LINK_INK = "#f2f2f2", LINK_FRAME = "#b0b0b0";
-function drawLinks(s) {
+function drawLinks(s, measureOnly = false) {
   if (!copyEls.length) return;
   s.save();
   s.textBaseline = "alphabetic";
@@ -842,7 +867,7 @@ function drawLinks(s) {
      few characters wider at rest, which also lines the brackets up when it stacks. */
   const slotOf = (el) => Math.max(wide(el.dataset.label), wide("copied!"));
   const perPxLine = inline.reduce((w, p) => w + (p.el ? slotOf(p.el) : wide(p.t)), 0) / 100;
-  const perPxCol = Math.max(...copyEls.map(slotOf)) / 100;
+  const perPxCol = (wide("[ ") + Math.max(...copyEls.map(slotOf)) + wide(" ]")) / 100;
 
   /* Landscape: the line shares the floor with the lockup and has to stop before it.
      Portrait: the lockup is above it and the whole width is its own. */
@@ -861,7 +886,7 @@ function drawLinks(s) {
   const stacked = lineFs < floorPx;
   let fs, rows;
   if (stacked) {
-    rows = copyEls.map(el => [{ t: label(el), el }]);
+    rows = copyEls.map(el => [{ t: "[ " }, { t: label(el), el }, { t: " ]" }]);
     fs = Math.min(Math.round(H * P.linkSize),          /* the width cap is a one-line rule */
                   Math.floor(room / perPxCol),
                   Math.floor(H * 0.30 / (rows.length * 1.35)));   /* and the column still has to fit */
@@ -871,6 +896,7 @@ function drawLinks(s) {
   }
   fs = Math.max(8, fs);
   setFont(fs);
+  if (measureOnly) { const font = s.font; s.restore(); return { fs, font }; }
 
   /* sit the ink on the floor line, not the baseline — the brackets hang below it
      and were being clipped by the bottom edge */
@@ -907,6 +933,14 @@ function drawLinks(s) {
       s.shadowColor = hot ? "rgba(255,255,255,0.85)" : "transparent";
       s.shadowBlur = hot ? fs * 0.5 : 0;
       s.fillText(p.t, ink, y);
+      /* Brightness cannot rescue a stroke split between adjacent cells. Reinforce
+         the frame slightly, as the wordmark does, without raising its ink colour.
+         The stacked layout retains its brackets and budgets their width too. */
+      if (!p.el && P.linkFrameStroke > 0) {
+        s.lineWidth = cellPx * P.linkFrameStroke;
+        s.strokeStyle = LINK_FRAME;
+        s.strokeText(p.t, ink, y);
+      }
       s.shadowBlur = 0; s.shadowColor = "transparent";
       if (p.el) LINK_HITS.push({ el: p.el, t: p.t, x: ink, y: y - fs * 0.95, w, h: fs * 1.3 });
       x += slot;
@@ -927,6 +961,30 @@ function syncLinkHits() {
     st.top = (b.y / DPX).toFixed(1) + "px";
     st.width = (b.w / DPX).toFixed(1) + "px";
     st.height = (b.h / DPX).toFixed(1) + "px";
+  }
+}
+
+/* Measure the actual layout and fonts before allocating a grid. Requested quality
+   is an upper bound on pitch: a slow machine may not spend the text's x-height.
+   Shared with rendering, so coverage cannot drift onto a duplicate layout formula. */
+function textLayoutFor(w, h, portrait, requested) {
+  const save = { W, H, PORTRAIT, cell: P.cellSize, lock: { ...LOCK } };
+  try {
+    W = w; H = h; PORTRAIT = portrait; P.cellSize = requested;
+    const group = groupMetrics();
+    placeLockup(group.gw, group.gh, group.pad);
+    const contact = drawLinks(textMeasure, true), gate = gateFont();
+    const xHeight = font => {
+      textMeasure.font = font;
+      const x = textMeasure.measureText("x");
+      return x.actualBoundingBoxAscent + x.actualBoundingBoxDescent;
+    };
+    const heights = { word: xHeight(group.font), contact: xHeight(contact.font), gate: xHeight(gate.font) };
+    const pitch = Math.max(1, Math.min(requested, Math.floor(Math.min(...Object.values(heights)) / P.minXCells)));
+    return { pitch, heights };
+  } finally {
+    W = save.W; H = save.H; PORTRAIT = save.PORTRAIT; P.cellSize = save.cell;
+    Object.assign(LOCK, save.lock);
   }
 }
 
@@ -1059,9 +1117,9 @@ function subSample() {
   return subx.getImageData(0, 0, w, h).data;
 }
 function pxLum(x, y) {
-  if (!SRC) return gridLum((x / P.cellSize) | 0, (y / P.cellSize) | 0);
-  const sx = clamp((x / P.cellSize * SUBX) | 0, 0, SUBW-1);
-  const sy = clamp((y / P.cellSize * SUBY) | 0, 0, SUBH-1);
+  if (!SRC) return gridLum((x / cellPx) | 0, (y / cellPx) | 0);
+  const sx = clamp((x / cellPx * SUBX) | 0, 0, SUBW-1);
+  const sy = clamp((y / cellPx * SUBY) | 0, 0, SUBH-1);
   const o = (sy*SUBW + sx) * 4;
   return LUMLUT[(0.2126*SRC[o] + 0.7152*SRC[o+1] + 0.0722*SRC[o+2]) | 0];
 }
@@ -1252,7 +1310,7 @@ function sampleCellGrid() {
 }
 
 function renderCells(t) {
-  const cs = P.cellSize, g = gctx;
+  const cs = cellPx, g = gctx;
   /* glyph-space animation is what `animated` governs; the source torus keeps
      tumbling either way. Freezing t here is what stops matrix (and disco's hue,
      and the background speckle) from animating on their own with it off. */
@@ -1853,6 +1911,10 @@ let settleDone = () => {};
 const SETTLED = new Promise(r => { settleDone = r; });
 function autoQuality(dt) {
   if (!P.autoQuality || !adapting) { settleDone(); return; }
+  if (adjusts >= MAX_ADJUSTS) {
+    if (undoStep) { const u = undoStep; undoStep = null; u.undo(); }
+    adapting = false; settleDone(); return;
+  }
   if (fxStep === 0 && !fxDeferred && !rungBlocked.fx && dt > P.targetMs * 2) {
     if (++badFrames >= BAD_FRAME_RUN) {
       badFrames = 0;
@@ -1861,7 +1923,7 @@ function autoQuality(dt) {
         fxStep = 0; setEmbellishment(true);
         retileWhy = "effects back, they were not the cost"; noteRetile();
       } };
-      fxStep = 1; setEmbellishment(false);
+      adjusts++; fxStep = 1; setEmbellishment(false);
       retileWhy = "effects off, frames at " + dt.toFixed(0) + "ms"; noteRetile();
       restartMeasure();
       return;
@@ -1903,7 +1965,7 @@ function autoQuality(dt) {
       fxStep = 0; setEmbellishment(true);
       retileWhy = "effects back, they were not the cost"; noteRetile();
     } };
-    fxStep = 1; setEmbellishment(false);
+    adjusts++; fxStep = 1; setEmbellishment(false);
     retileWhy = "effects off " + measured.toFixed(1) + "ms"; noteRetile();
     restartMeasure();
     return;
@@ -1924,20 +1986,20 @@ function autoQuality(dt) {
       cellStep = prevCell; P.cellSize = CELL_LADDER[cellStep];
       retileWhy = "grid back, detail was not the cost"; resize();
     } };
-    cellStep++; P.cellSize = CELL_LADDER[cellStep];
+    adjusts++; cellStep++; P.cellSize = CELL_LADDER[cellStep];
     retileWhy = "coarser grid " + measured.toFixed(1) + "ms";
     resize();
     return;
   }
   /* comfortably under it: hand it back in the reverse order it was taken */
   if (measured < P.targetMs * 0.55 && renderScale >= 1 && cellStep > 0) {
-    cellStep--; P.cellSize = CELL_LADDER[cellStep];
+    adjusts++; cellStep--; P.cellSize = CELL_LADDER[cellStep];
     retileWhy = "finer grid " + measured.toFixed(1) + "ms";
     resize();
     return;
   }
   if (measured < P.targetMs * 0.55 && renderScale >= 1 && cellStep === 0 && fxStep > 0 && !fxDeferred) {
-    fxStep = 0; setEmbellishment(true);
+    adjusts++; fxStep = 0; setEmbellishment(true);
     retileWhy = "effects back " + measured.toFixed(1) + "ms"; noteRetile();
     restartMeasure();
     return;
@@ -1951,7 +2013,7 @@ function autoQuality(dt) {
     next = Math.min(1, renderScale * Math.min(1.6, Math.sqrt(P.targetMs * 0.8 / measured)));
   }
   next = quantScale(next);
-  if (Math.abs(next - renderScale) < 0.02 || ++adjusts >= MAX_ADJUSTS) {
+  if (Math.abs(next - renderScale) < 0.02) {
     /* A step still under test must not be frozen in by a click that lands mid-experiment:
      put it back, then stop. */
   if (undoStep) { const u = undoStep; undoStep = null; u.undo(); }
@@ -1962,7 +2024,7 @@ function autoQuality(dt) {
   undoStep = { rung: "scale", undo: () => {
     renderScale = prevScale; retileWhy = "resolution back, pixels were not the cost"; resize();
   } };
-  renderScale = next;
+  adjusts++; renderScale = next;
   retileWhy = "autoQuality " + measured.toFixed(1) + "ms";
   resize();                                          /* restarts the measurement */
 }
@@ -2035,7 +2097,7 @@ function loop(now) {
       const ms = acc / fcount;
       const line = ms.toFixed(1) + " ms/frame  " + (1000 / ms).toFixed(0) + " fps  " +
                    (accCpu / fcount).toFixed(1) + " ms script  " +
-                   cols + "x" + rows + " cells  scale " + renderScale.toFixed(2);
+                   cols + "x" + rows + " cells  pitch " + cellPx + "px  scale " + renderScale.toFixed(2);
       hud.textContent = SHOW_DIAG
         ? line + "  dpr " + (devicePixelRatio || 1) + "  adapting " + adapting +
           "\n\nre-tiles (each one is a visible jump):\n" + RETILES.join("\n")
@@ -2055,7 +2117,7 @@ const ALL_MODES = ["characters","dither","mosaic","pixel","dots","cross","diamon
 const ALL_BLUR = ["off","gaussian","directional","tilt","lens","progressive"];
 const ALL_ANIM = ["wave","pulse","shimmer","ripple","flicker"];
 
-function selftest() {
+async function selftest() {
   let pass = 0, fail = 0;
   const ok = (c, m) => { if (c) pass++; else { fail++; console.error("FAIL:", m); } };
   const snapshot = JSON.parse(JSON.stringify(P));
@@ -2437,17 +2499,17 @@ function selftest() {
       };
       /* awaited one at a time: toClipboard suspends on its first await, so installing
          all three stubs up front would have every call resume against the last one */
-      (async () => {
+      try {
         stub(true, false);  const native   = await toClipboard("x");
         stub(false, true);  const fallback = await toClipboard("x");
         stub(false, false); const neither  = await toClipboard("x");
+        ok(native === !!(navigator.clipboard && isSecureContext), "clipboard's own path reports its actual availability");
+        ok(fallback, "execCommand covers a refused or unavailable native clipboard");
+        ok(!neither, "with both clipboard paths refused it reports failure");
+      } finally {
         if (navigator.clipboard) navigator.clipboard.writeText = realW;
         document.execCommand = realE;
-        if (!native)   console.error("FAIL: the clipboard's own path reports success");
-        if (!fallback) console.error("FAIL: execCommand covers a non-secure context");
-        if (neither)   console.error("FAIL: with both refused it must report failure");
-      })();
-      ok(true, "clipboard success is reported from the write, not assumed (async, logs its own failures)");
+      }
     }
   }
 
@@ -2513,8 +2575,8 @@ function selftest() {
        hairline stroke averaged over a 6px cell comes out a grey smudge at any size. */
     frame(1.7);
     const b = LINK_HITS[0];
-    const cx0 = Math.max(0, (b.x / P.cellSize) | 0), cx1 = Math.min(cols, Math.ceil((b.x + b.w) / P.cellSize));
-    const cy0 = Math.max(0, (b.y / P.cellSize) | 0), cy1 = Math.min(rows, Math.ceil((b.y + b.h) / P.cellSize));
+    const cx0 = Math.max(0, (b.x / cellPx) | 0), cx1 = Math.min(cols, Math.ceil((b.x + b.w) / cellPx));
+    const cy0 = Math.max(0, (b.y / cellPx) | 0), cy1 = Math.min(rows, Math.ceil((b.y + b.h) / cellPx));
     let sum = 0, n = 0;
     for (let y = cy0; y < cy1; y++) for (let x = cx0; x < cx1; x++) { n++; sum += LUM[y * cols + x]; }
     const meanL = sum / Math.max(1, n);
@@ -2537,9 +2599,9 @@ function selftest() {
       for (let x = 0; x < W && firstLit < 0; x++) {
         for (let y = 0; y < ry1 - ry0; y++) if (strip[(y * W + x) * 4] > 40) { firstLit = x; break; }
       }
-      const fx0 = Math.max(0, (firstLit / P.cellSize) | 0);
-      const fx1 = Math.min(cols, Math.ceil((b0.x - P.cellSize) / P.cellSize));
-      const fy0 = Math.max(0, (b0.y / P.cellSize) | 0), fy1 = Math.min(rows, Math.ceil((b0.y + b0.h) / P.cellSize));
+      const fx0 = Math.max(0, (firstLit / cellPx) | 0);
+      const fx1 = Math.min(cols, Math.ceil((b0.x - cellPx) / cellPx));
+      const fy0 = Math.max(0, (b0.y / cellPx) | 0), fy1 = Math.min(rows, Math.ceil((b0.y + b0.h) / cellPx));
       let fSum = 0, fN = 0, fLit = 0;
       for (let y = fy0; y < fy1; y++) for (let x = fx0; x < fx1; x++) {
         const L = LUM[y * cols + x]; fN++; fSum += L; if (L > 0.18) fLit++;
@@ -2552,7 +2614,7 @@ function selftest() {
     }
 
     /* the grid is what eats these words, so the floor is measured in cells, not px */
-    const tall = b.h / 1.3 / P.cellSize;
+    const tall = b.h / 1.3 / cellPx;
     ok(tall >= LINK_MIN_CELLS, "contact words stay at least " + LINK_MIN_CELLS +
        " cells tall (" + tall.toFixed(1) + ")");
 
@@ -2621,7 +2683,7 @@ function selftest() {
         lockInside: (LOCK.cx - LOCK.w / 2) * W >= -1 && (LOCK.cx + LOCK.w / 2) * W <= W + 1,
         under: LINK_HITS.every(x => x.y > LOCK.floor * H - 2),
         inside: LINK_HITS.every(x => x.x >= -1 && x.x + x.w <= W + 1 && x.y + x.h <= H + 1),
-        legible: LINK_HITS[0].h / 1.3 / P.cellSize >= LINK_MIN_CELLS
+        legible: LINK_HITS[0].h / 1.3 / cellPx >= LINK_MIN_CELLS
       }));
       for (const k of Object.keys(r)) if (!r[k]) bad.push(w + "x" + h + ":" + k);
     }
@@ -2635,12 +2697,74 @@ function selftest() {
     }));
     ok(land.notPortrait && land.rightAnchored && land.clears,
        "a landscape window keeps the arrangement it had: " + JSON.stringify(land));
+    let mode = portraitMode(799, 1000), flips = 0;
+    for (const w of [800, 801, 800, 799, 800]) {
+      const next = portraitMode(w, 1000, mode); if (next !== mode) flips++; mode = next;
+    }
+    ok(flips === 0 && !portraitMode(803, 1000, mode) && portraitMode(797, 1000, false),
+       "one-pixel breakpoint jitter stays put, deliberate resizing still changes composition");
+    const requested = P.cellSize;
+    P.cellSize = CELL_LADDER[CELL_LADDER.length - 1];
+    const brackets = at(640, 480, () => {
+      const fill = sctx.fillText, tokens = [];
+      sctx.fillText = function (text, ...args) { tokens.push(text); return fill.call(this, text, ...args); };
+      try { drawSource(1.7); } finally { sctx.fillText = fill; }
+      return tokens.filter(t => t === "[ " || t === " ]").length;
+    });
+    ok(brackets === copyEls.length * 2, "stacked contact rows retain both brackets (" + brackets + " tokens)");
+    P.cellSize = requested;
     measureViewport = realMeasure; resize();
+  }
+
+  /* A phone's visible canvas is shorter than its screen. Exercise the element
+     measurement itself; overriding measureViewport would bypass the regression. */
+  {
+    const style = cv.style.cssText;
+    const wasAt = enterAt;
+    try {
+      for (const [name, w, visible] of [["iPhone 15", 393, 746], ["small phone", 375, 559], ["tall phone", 412, 807]]) {
+        cv.style.width = w + "px"; cv.style.height = visible + "px";
+        resize(); enterAt = performance.now() - 1e6; drawSource(1.7);
+        const a = P.tilt * Math.PI / 180;
+        const rh = GH * 0.78, rw = GW * 1.03, gap = Math.round(GH * 0.01);
+        const corners = [[-GW/2,-GH/2],[GW/2,-GH/2],[-rw/2,GH/2+gap+rh],[rw/2,GH/2+gap+rh]];
+        const ys = corners.map(([x,y]) => (LOCK.cy*H + x*Math.sin(a) + y*Math.cos(a)) / (H / vpH));
+        ok(vpW === w && vpH === visible && Math.min(...ys) >= 0 && Math.max(...ys) <= visible,
+           name + " lockup and reflection fit the measured visible box (tail " + Math.max(...ys).toFixed(1) + "/" + visible + ")");
+        const surface = src, grid = LUM;
+        resize(); resize();
+        ok(src === surface && LUM === grid, name + " unchanged canvas box performs zero re-tiles");
+      }
+    } finally { cv.style.cssText = style; resize(); enterAt = wasAt; }
   }
 
   /* The wordmark sits on the donut's centre line. It used to sit on the floor of the
      group box, which put it about a quarter of the font size low — invisible until
      someone looked at the lockup on its own and said the word hangs below the mark. */
+  {
+    for (const phone of [false, true]) {
+      let worst = Infinity, where = "", count = 0;
+      for (let vw = phone ? 320 : 640; vw <= (phone ? 500 : 3840); vw += phone ? 4 : 32)
+      for (let vh = 480; vh <= (phone ? 1100 : 2160); vh += phone ? 4 : 32) {
+        if (phone && (vh / vw < 1.5 || vh / vw > 2.4)) continue;
+        for (const dpr of phone ? [2, 3] : [1, 2])
+        for (const scale of [1, P.minScale])
+        for (const requested of CELL_LADDER) {
+          const b = backingSize(vw, vh, dpr, scale);
+          const layout = textLayoutFor(b.w, b.h, vw / vh < PORTRAIT_AT, requested);
+          for (const [name, height] of Object.entries(layout.heights)) {
+            const cells = height / layout.pitch;
+            count++;
+            if (cells < worst) { worst = cells; where = name + " " + vw + "x" + vh + "@" + dpr + " scale " + scale; }
+          }
+        }
+      }
+      const result = (phone ? "phone" : "desktop") + " text keeps " + P.minXCells +
+         " x-height cells through the quality ladder (" + count + " checks, worst " + worst.toFixed(2) + " at " + where + ")";
+      ok(worst >= P.minXCells, result);
+      console.log("LEGIBILITY: " + result);
+    }
+  }
   {
     buildGroup(2.1);
     const d = gpx.getImageData(0, 0, GW, GH).data;
@@ -2748,6 +2872,9 @@ function selftest() {
     ok(B.scale < 1, "when only pixels are the cost, the backing store is what shrinks");
     ok(B.cell === CELL_LADDER[0],
        "and the grid, which was never the problem, keeps every cell (cell " + B.cell + ")");
+    const hunting = run(() => P.cellSize === CELL_LADDER[0] ? 100 : 10);
+    ok(!hunting.adapting && hunting.resized <= MAX_ADJUSTS + 1,
+       "the adjustment cap also stops grid/effects hunting (" + hunting.resized + " re-tiles)");
     /* Not asserted: that the effects come back. The effects rung is deliberately the
        cheap one — an 8% bar, because losing atmosphere on a machine that did not need
        to lose it costs the picture little, while a bar high enough to be immune to
@@ -2816,13 +2943,15 @@ copyEls.forEach(el => {
   };
   /* pointer events, and touch pointers cooled explicitly on lift: a touch fires enter
      and never leaves, so a tapped word used to stay bright for the rest of the visit */
+  let touching = false;
   el.addEventListener("pointerenter", (e) => { el._hot = e.pointerType !== "touch"; });
+  el.addEventListener("pointerdown", (e) => { touching = e.pointerType === "touch"; if (touching) el._hot = true; });
   el.addEventListener("pointerleave", () => { el._hot = false; });
-  el.addEventListener("pointercancel", () => { el._hot = false; });
+  el.addEventListener("pointercancel", () => { touching = false; el._hot = false; });
   el.addEventListener("pointerup", (e) => { if (e.pointerType === "touch") el._hot = false; });
-  el.addEventListener("focus", () => { el._hot = true; });
+  el.addEventListener("focus", () => { if (!touching) el._hot = true; });
   el.addEventListener("blur",  () => { el._hot = false; });
-  el.addEventListener("click", activate);
+  el.addEventListener("click", () => { if (touching) el._hot = false; touching = false; activate(); });
   el.addEventListener("keydown", e => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(); }
   });
@@ -2846,6 +2975,8 @@ const GATE_FLOOR = 0.10;
    tenth-lit field to a full one is its own jolt. */
 const GATE_RAMP = matchMedia("(prefers-reduced-motion: reduce)").matches ? 400 : 1400;
 let entered = false, enterAt = 0;
+let bootDone;
+const BOOT_READY = new Promise(resolve => { bootDone = resolve; });
 /* 0 with the door shut, 1 with the piece fully lit */
 const gateMix = () => enterAt ? clamp((performance.now() - enterAt) / GATE_RAMP, 0, 1) : 0;
 
@@ -2880,6 +3011,7 @@ function reveal() {
      focus onto a contact word after a click would light it up like a hover nobody
      performed. This is true only when the door was opened from the keyboard. */
   const byKeyboard = gateEl.matches(":focus-visible");
+  if (undoStep) { const u = undoStep; undoStep = null; u.undo(); }
   entered = true;
   enterAt = performance.now();
   /* Whatever the walk had reached is what this session keeps. If the click came in
@@ -2907,14 +3039,10 @@ let entering = false;
 async function enter() {
   if (entering) return;
   entering = true;
-  /* Both remaining jumps re-lay the whole piece out, and both are held here rather
-     than papered over: the webfont swapping under a lockup already drawn, and
-     auto-quality's first correction. boot() starts on a 1.5s timeout so a dead CDN
-     still runs; the door can afford to wait longer than that, so it does — and a
-     click inside the first second waits for the correction it would otherwise have
-     put on screen. */
+  /* Boot commits the face once. Wait for that decision, not a CDN that can no
+     longer change it, and give the quality walk a bounded chance to finish. */
   const capped = (promise, ms) => Promise.race([promise, new Promise(r => setTimeout(r, ms))]);
-  await Promise.all([capped(FONT_READY, 4000), capped(SETTLED, 2500)]);
+  await Promise.all([BOOT_READY, capped(SETTLED, 2500)]);
   reveal();
   sndEl.src = SOUNDTRACK;
   sndEl.volume = 0;
@@ -3024,13 +3152,15 @@ if (SHOW_FPS || SHOW_DIAG) hud.style.display = "block";
 TINT = parseTint(P.tint);
 TONE = buildTone();
 
-function boot() {
+async function boot() {
+  FONT_LOCKED = true;    /* a late face cannot change either the lockup or its pitch */
   resize();
+  bootDone();
   /* #links stays exactly at inset:0. syncLinkHits places each box in viewport
      coordinates taken from the canvas layout, so any offset on the container is
      added to every one of them: a left of marginX put the boxes 115px right of the
      words they belong to at 1920 wide. The margins live in the paint, not here. */
-  if (Q.has("selftest")) { frame(0); selftest(); }
+  if (Q.has("selftest")) { frame(0); await selftest(); }
   if (Q.has("bench")) { bench(); return; }        /* diagnostic only: no loop, no door */
   t0 = performance.now();   /* t starts now, not at parse time, whatever the font cost */
   if (P.pauseWhenIdle && idle()) { frame(0); setPaused(true); }   /* loaded in the background */

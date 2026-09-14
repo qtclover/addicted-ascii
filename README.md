@@ -56,16 +56,28 @@ Everything lives in the `PARAMS` object at the top of `index.html`.
 | Key | Notes |
 |---|---|
 | `renderMode` | 25 of them — `hexdump`, `characters`, `braille`, `matrix`, `contour`, `halfblocks`, … |
-| `cellSize` | Grid pitch in device pixels, and the sharpness knob that matters. Not quadratic in practice — most of a frame is fixed cost, so at 1920x945 the whole range is 10.9ms (8px) to 18.4ms (3px). Default 4: most of the sharpness inside the 60fps ceiling. At 3 it stops reading as a glyph field |
+| `cellSize` / `minXCells` | Requested grid pitch in backing-store pixels (default 4). The effective pitch is capped by the measured x-height of the wordmark, contact text and entry text: each keeps at least 6 cells, including at reduced render scale. `?fps` reports the effective pitch. This can increase rendering cost; see `AUDIT.md` for before/after measurements. |
 | `maxDpr` | Render at device pixels for crisp glyphs. Capped by `pixelBudget` |
 | `pixelBudget` | **The sharpness knob.** Backing-store cap. At `9e6` a 3440x1440 or 4K window renders 1:1 with no CSS upscaling (~45fps there); `2.4e6` gives 8.6px cells at ~80fps |
 | `autoQuality` / `targetMs` / `floorMs` / `minScale` | Degrades in one order, cheapest loss first: **post-effects and the blurred backdrop**, then **grid detail** (`cellSize` up its ladder), then **resolution** (`renderScale`, quantised to 1/k). Atmosphere costs no geometry and does not even re-tile; resolution is last because the browser then stretches the result and everything goes soft. Measured on Gecko at 1.72Mpx: 58ms with effects, 22ms without, same pixels and same cells — 17fps to 45fps for the glow. Chromium renders the lot inside budget and never reaches the first rung. The walk runs behind the gate, discards 8 frames after each change (a realloc is not a fair sample), converges, and then stops for good |
 | `pauseWhenIdle` | Hidden or unfocused: the loop stops rescheduling, nothing runs at all |
 | `maxFps` | Frame ceiling once you are past the gate. A 144Hz panel was doing 2.4x the work for a shimmer that does not read any faster. Uncapped behind the gate, where auto-quality still needs the true cost of a frame |
-| `linkSize` | Contact line height. Below eight cells a glyph has no letterform left after the grid, so rather than shrink past that the line stacks into a column — which needs only the width of the longest word |
+| `linkSize` | Contact line height. An eight-em-cell rule selects a row or a column; the column budgets the longest label and its brackets. |
 | `marginX` / `marginY` / `tilt` | Lockup placement and lean |
 | `pfx` | 9 post-effects, each `{enabled, intensity}` |
 | `animStyle` | `shimmer`, `wave`, `pulse`, `ripple`, `flicker` |
+
+The eight-em-cell rule selects the contact arrangement; it is not the legibility
+guarantee. The six **x-height** cell limit is measured separately from the actual
+font. Stacked contact rows retain their brackets and include them in the width budget.
+
+Font CSS loads without blocking the page. Boot waits up to 1.5 seconds, then commits
+to Instrument Serif or the local fallback for the visit; a late font cannot move the
+art or change its grid. Quality adaptation is limited to six adjustments across all
+three controls, and an unverified adjustment is reverted before entry.
+
+Portrait starts below a width/height ratio of 0.8. A two-CSS-pixel deadband prevents
+one-pixel resize jitter from switching the entire composition back and forth.
 
 ## Credits
 
