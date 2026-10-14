@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>addicted</title>
+<link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link id="font-style" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:wght@400&display=swap" rel="stylesheet" media="print"
@@ -105,7 +106,10 @@ const PARAMS = {
   mask: { enabled: false, tool:"freehand", brushSize:30, showOverlay:false, invert:false, dataUrl:null, shapes:[] },
   /* not in the 21st.dev set — the lockup this build draws instead of a photo */
   word: "addicted", tilt: -3,
-  figure: "fig.png",  /* image drawn where the donut was; null (or a failed load) = donut */
+  figure: "fig.webp", /* image drawn where the donut was; null (or a failed load) = donut.
+                         Pre-cropped to its ink, greyscaled with the grayscale() weights and
+                         512px tall: the grid never shows more than ~320 cells of it. 41KB
+                         against the 736px colour PNG's 413KB, same cells within 1/255 */
   pauseWhenIdle: true,   /* stop every calculation when the tab is hidden or unfocused */
   maxFps: 60,         /* ceiling once you are past the gate. The shimmer does not read
                          any faster and a 144Hz panel was doing 2.4x the work for it.
@@ -115,7 +119,9 @@ const PARAMS = {
   linkSize: 0.095,    /* contact line height, fraction of frame height. Glyph cells are
                          coarse: below ~0.075 the grid eats the words. 0.115 collides
                          with the lockup at 16:9 */
-  linkFrameStroke: 0.1, /* bracket/separator stroke reinforcement, in grid cells */
+  linkFrameStroke: 0.2, /* bracket/separator stroke reinforcement, in grid cells. With the
+                           stems snapped to the grid, 0.2 held 9.6-16% coverage at 0.47-0.55
+                           of the words' ink over 40 window sizes, both modes */
   minXCells: 6,       /* measured x-height floor for every source text face */
   portraitSlop: 2,    /* CSS-pixel deadband around the portrait breakpoint on resize */
   marginY: 0.03,      /* reflection tail to bottom edge       */
@@ -257,7 +263,7 @@ function resize() {
   COL = new Uint8ClampedArray(cols * rows * 3);
   atlases.clear(); masks.clear();
   lastAtlas = null; lastBucket = -1;
-  lastMask = null; lastMaskKey = ""; gimg = null; gbuf = null;
+  lastMask = null; lastMaskChars = null; gimg = null; gbuf = null;
   grp = null; refl = null; refl2 = null;
   restartMeasure();                              /* a rebuild is not a fair sample */
   watchDpr();
@@ -303,8 +309,8 @@ let dprQuery = null, lastDpr = devicePixelRatio || 1;
 function onDprChange() {
   const now = devicePixelRatio || 1;
   if (now === lastDpr) { watchDpr(); return; }
-  lastDpr = now;
   retileWhy = "dpr " + lastDpr + " -> " + now;
+  lastDpr = now;
   scheduleResize();
 }
 function watchDpr() {
@@ -409,12 +415,13 @@ const GLYPHONLY = { hexdump: 1, characters: 1, braille: 1, matrix: 1 };
 
 let gimg = null, gbuf = null, GBUF_ON = false;
 const masks = new Map();
-let lastMask = null, lastMaskKey = "";
+let lastMask = null, lastMaskChars = null, lastMaskSize = -1;
 /* the glyph shapes as a plain coverage map — colour is the cell's own, applied per
    pixel, which is finer than the canvas path's 4x4x4 chroma buckets */
 function maskAtlas(chars, size) {
+  /* runs per cell: compare, do not build a key string ~70k times a frame */
+  if (chars === lastMaskChars && size === lastMaskSize) return lastMask;
   const key = chars + "|" + size;
-  if (lastMaskKey === key) return lastMask;
   let a = masks.get(key);
   if (!a) {
     const c = mk(size * chars.length, size), x = c.getContext("2d", { willReadFrequently: true });
@@ -441,7 +448,7 @@ function maskAtlas(chars, size) {
     a = { m, w: c.width, n, bx0, bx1, by0, by1 };
     masks.set(key, a);
   }
-  lastMaskKey = key; lastMask = a;
+  lastMaskChars = chars; lastMaskSize = size; lastMask = a;
   return a;
 }
 function glyphBufBegin() {
@@ -516,7 +523,19 @@ const D_LSCALE = 1023 / Math.SQRT2;
    loads, or if it never does, the donut still tumbles. */
 if (Q.has("donut")) P.figure = null;   /* ?donut: the torus back in its slot */
 const figImg = P.figure ? new Image() : null;
-if (figImg) figImg.src = P.figure;
+/* CORS mode, so a figure the page may not read back never reaches the source canvas.
+   Plain-loaded from file:// (an opaque origin) or another host, it tainted the canvas
+   and the first getImageData threw a SecurityError that killed the loop on frame one.
+   Now that load fails instead, and a failed load hands the slot back to the donut —
+   the layout keys off P.figure, so leaving it set left the slot empty. Boot waits on
+   this so the layout is decided once, before the first paint. */
+const FIG_READY = new Promise(resolve => {
+  if (!figImg) return resolve();
+  figImg.crossOrigin = "anonymous";
+  figImg.onload = resolve;
+  figImg.onerror = () => { P.figure = null; if (src) scheduleResize(); resolve(); };
+  figImg.src = P.figure;
+});
 let fbuf = null, FN = 0, figBox = null;
 function drawFigure(box) {
   if (!P.figure || !figImg || !figImg.complete || !figImg.naturalWidth) return null;
@@ -660,10 +679,17 @@ function groupMetrics() {
   const gh = Math.max(box, Math.round(fs * 1.35), asc + desc + Math.round(fs * 0.20)) + pad * 2;
   return { fs, box, gap, lb, font, asc, desc, pad, gw, gh };
 }
+/* Without the donut nothing in the group moves, so it is painted once per layout, not
+   once per frame — and the reflection and its five blurred bands, keyed on grpVer,
+   follow it. With the donut the key is empty and every frame rebuilds, as before. */
+let grpKey = "", grpVer = 0;
 function buildGroup(t) {
   const { fs, box, gap, lb, font, asc, desc, pad, gw, gh } = groupMetrics();
   const inkMid = gh => gh / 2 + (asc - desc) / 2;
   GPAD = pad;
+  const key = box ? "" : gw + "x" + gh + "|" + font + "|" + P.word;
+  if (grp && key && key === grpKey) return grp;
+  grpKey = key; grpVer++;
   if (!grp || GW !== gw || GH !== gh) { grp = mk(gw, gh); gpx = grp.getContext("2d"); GW = gw; GH = gh; }
   gpx.setTransform(1,0,0,1,0,0);
   gpx.globalAlpha = 1; gpx.globalCompositeOperation = "source-over"; gpx.filter = "none";
@@ -694,8 +720,10 @@ function buildGroup(t) {
 }
 
 /* flipped, faded copy for the floor */
-let refl = null, rfx = null;
+let refl = null, rfx = null, reflVer = -1;
 function reflection(g) {
+  if (refl && reflVer === grpVer && refl.width === GW && refl.height === GH) return refl;
+  reflVer = grpVer;
   if (!refl || refl.width !== GW || refl.height !== GH) { refl = mk(GW, GH); rfx = refl.getContext("2d"); }
   rfx.setTransform(1,0,0,1,0,0);
   rfx.globalCompositeOperation = "source-over";
@@ -717,9 +745,11 @@ function reflection(g) {
    to nothing at its own top and bottom edge, which is a seam per band. Built here,
    square and on whole pixels, then drawn once through the tilt: clipping inside the
    rotation antialiases the band edges and seams them a second way. */
-let refl2 = null, r2x = null, R2W = 0, R2H = 0;
+let refl2 = null, r2x = null, R2W = 0, R2H = 0, r2Ver = -1;
 function reflectionRamp(rc, w, h) {
   w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
+  if (refl2 && r2Ver === grpVer && R2W === w && R2H === h) return refl2;
+  r2Ver = grpVer;
   if (!refl2 || R2W !== w || R2H !== h) { refl2 = mk(w, h); r2x = refl2.getContext("2d"); R2W = w; R2H = h; }
   r2x.setTransform(1,0,0,1,0,0);
   r2x.globalAlpha = 1; r2x.globalCompositeOperation = "source-over"; r2x.filter = "none";
@@ -973,7 +1003,17 @@ function drawLinks(s, measureOnly = false) {
          made the whole row read as off-centre. Splitting the slack either side keeps
          the row a fixed width, so nothing moves when the label changes, and puts the
          ink where the eye expects it. */
-      const ink = x + (slot - w) / 2;
+      let ink = x + (slot - w) / 2;
+      /* A frame stem is under two cells wide, so whether it lights two cells a row or
+         one cell between two greys was decided by where it happened to land on the grid:
+         bracket coverage swung 7-16% with the window size alone. Put the stem's outer
+         edge on a cell boundary instead — "]" closes on its right edge, the others open
+         on their left. Under half a cell of shift, invisible once the grid has it. */
+      if (!p.el) {
+        const m = s.measureText(p.t), cw = W / cols, lw = cellPx * Math.max(0, P.linkFrameStroke) / 2;
+        const edge = p.t.trim() === "]" ? ink + m.actualBoundingBoxRight + lw : ink - m.actualBoundingBoxLeft - lw;
+        ink += Math.round(edge / cw) * cw - edge;
+      }
       /* Hover lifts the word to white and adds a bloom the grid spreads into the
          surrounding cells — brightness alone is a weak signal once the field has
          quantised it. Base sits high because this corner is where the vignette bites
@@ -1335,7 +1375,81 @@ const STAR_SHARE = 0.80, STAR_DUTY = 0.14;
    difference 0.01/255, worst 2/255, for 0.8ms instead of 4.15ms. Single-step "low"
    is the thing to avoid — it point-samples one mip and crawls (mean 0.82, worst 137). */
 let mipA = null, mipAx = null, mipB = null, mipBx = null;
-function sampleCellGrid() {
+/* The getImageData below waits for the GPU to finish everything queued before the CPU
+   may start on the cells — measured 2.9ms of a 6.4ms script frame spent doing nothing.
+   WebGL2 can box-filter the source to one texel per cell and read it into a pixel-pack
+   buffer behind a fence instead, so the live loop collects frame N's grid during frame
+   N+1 rather than waiting for it: 159fps -> 221fps uncapped at 1424x805. The cells
+   trail the source by one frame of a slow tumble. The self-test, the bench and the
+   paused redraw read results straight back, so they keep the synchronous path. */
+let GLG = null;                                  /* null: untried; false: unavailable */
+function glGridInit() {
+  const gl = document.createElement("canvas").getContext("webgl2", { antialias: false, depth: false, stencil: false });
+  if (!gl) return false;
+  const shader = (type, text) => { const s = gl.createShader(type); gl.shaderSource(s, text); gl.compileShader(s); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, shader(gl.VERTEX_SHADER, `#version 300 es
+    void main() { gl_Position = vec4(vec2(gl_VertexID & 1, gl_VertexID >> 1) * 4.0 - 1.0, 0.0, 1.0); }`));
+  /* exact box: every source pixel whose top-left lands in the cell, averaged */
+  gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `#version 300 es
+    precision highp float; uniform sampler2D S; uniform vec2 K; out vec4 o;
+    void main() {
+      ivec2 c = ivec2(gl_FragCoord.xy), size = textureSize(S, 0);
+      ivec2 a = ivec2(vec2(c) * K), b = min(max(a + 1, ivec2(vec2(c + 1) * K)), size);
+      vec4 sum = vec4(0.0);
+      for (int y = a.y; y < b.y; y++) for (int x = a.x; x < b.x; x++) sum += texelFetch(S, ivec2(x, y), 0);
+      o = sum / float((b.x - a.x) * (b.y - a.y));
+    }`));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
+  gl.useProgram(prog);
+  const g = { gl, k: gl.getUniformLocation(prog, "K"), src: gl.createTexture(), out: gl.createTexture(),
+              fb: gl.createFramebuffer(), pbo: gl.createBuffer(), cols: 0, rows: 0, fence: null, buf: null, have: false };
+  for (const t of [g.src, g.out]) {
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, g.fb);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, g.pbo);
+  gl.canvas.addEventListener("webglcontextlost", () => { GLG = false; });   /* the 2D path, for good */
+  return g;
+}
+/* frame N-1's grid if it is ready, else the last one, else null (no grid yet) */
+function glGridSample() {
+  if (GLG === null) GLG = glGridInit();
+  if (!GLG) return null;
+  const g = GLG, gl = g.gl;
+  if (g.cols !== cols || g.rows !== rows) {      /* re-tiled: whatever is in flight is for the old grid */
+    if (g.fence) gl.deleteSync(g.fence);
+    g.cols = cols; g.rows = rows; g.fence = null; g.have = false; g.buf = new Uint8Array(cols * rows * 4);
+    gl.bindTexture(gl.TEXTURE_2D, g.out);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, cols, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, g.out, 0);
+    /* COPY, not the READ hint the buffer really is: Chromium shadows READ buffers and
+       then warns on every reuse that the shadow went unread — even in the textbook
+       fence-then-read pattern — capping out at 256 console lines. Measured the same
+       0.3ms read either way, and the data is identical. */
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, g.buf.length, gl.STREAM_COPY);
+  }
+  if (g.fence) {
+    /* GPU still on the last one: draw this frame from the grid before it, never wait */
+    if (gl.clientWaitSync(g.fence, 0, 0) === gl.TIMEOUT_EXPIRED) return g.have ? g.buf : null;
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, g.buf);
+    gl.deleteSync(g.fence); g.fence = null; g.have = true;
+  }
+  gl.bindTexture(gl.TEXTURE_2D, g.src);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  gl.uniform2f(g.k, W / cols, H / rows);
+  gl.viewport(0, 0, cols, rows);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+  g.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  gl.flush();
+  return g.have ? g.buf : null;
+}
+function sampleCellGrid(live) {
+  if (live) { const d = glGridSample(); if (d) return d; }
   const hw = W >> 1, hh = H >> 1;
   if (!mipA || mipA.width !== hw || mipA.height !== hh) {
     mipA = mk(hw, hh); mipAx = mipA.getContext("2d");
@@ -1359,7 +1473,7 @@ function sampleCellGrid() {
   return smctx.getImageData(0, 0, cols, rows).data;
 }
 
-function renderCells(t) {
+function renderCells(t, live = false) {
   const cs = cellPx, g = gctx;
   /* glyph-space animation is what `animated` governs; the source torus keeps
      tumbling either way. Freezing t here is what stops matrix (and disco's hue,
@@ -1367,7 +1481,7 @@ function renderCells(t) {
   const at = P.animated ? t : 0;
   /* the per-cell average is a downscale — the GPU box-filters ~1M pixels far
      faster than a JS sampling loop, and only cols*rows pixels come back */
-  const avg = sampleCellGrid();
+  const avg = sampleCellGrid(live);
   SRC = SUBCELL[P.renderMode] ? subSample() : null;
 
   const cpuLayer = !!GLYPHONLY[P.renderMode];
@@ -1734,16 +1848,19 @@ const PFX = {
     tctx.globalCompositeOperation = "source-over";
     tctx.fillStyle = "#000"; tctx.fillRect(0, 0, W, H);
     tctx.fillStyle = "#fff";
+    /* one path, one fill: a fill per dot was tens of thousands of draw calls a frame */
+    tctx.beginPath();
     for (let gy = 0; gy < gh; gy++) {
       for (let gx = 0; gx < gw; gx++) {
         const o = (gy * gw + gx) * 4;
         const l = (0.2126*img[o] + 0.7152*img[o+1] + 0.0722*img[o+2]) / 255;
         if (l < 0.01) continue;
-        tctx.beginPath();
-        tctx.arc(gx*step + step/2, gy*step + step/2, Math.sqrt(l) * step * 0.62, 0, TAU);
-        tctx.fill();
+        const cx = gx*step + step/2, cy = gy*step + step/2, r = Math.sqrt(l) * step * 0.62;
+        tctx.moveTo(cx + r, cy);
+        tctx.arc(cx, cy, r, 0, TAU);
       }
     }
+    tctx.fill();
     ctx.save(); ctx.globalAlpha = I; ctx.drawImage(tmp, 0, 0); ctx.restore();
   },
   pixelate(I) {
@@ -1824,9 +1941,9 @@ function compose() {
   postfx();
 }
 
-function frame(t) {
+function frame(t, live = false) {   /* live: the loop, which may take the grid a frame late */
   drawSource(t);
-  renderCells(t);
+  renderCells(t, live);
   compose();
 }
 
@@ -2084,6 +2201,10 @@ function autoQuality(dt) {
    no donut, no sampling, no draws. t0 absorbs the paused span so the tumble
    picks up where it left off instead of jumping. */
 let paused = false, pausedAt = 0;
+/* the one pending loop callback. Pausing cancels it: a blur and a focus inside one
+   frame used to leave it queued beside the one resume adds, and two loops then ran
+   for the rest of the visit — every frame drawn twice, and auto-quality fed dt = 0 */
+let loopRaf = 0;
 /* Embedded in a frame, the page almost never holds focus even while it is plainly
    visible — the parent document has it — so treating blur as idle would draw one
    frame, dim, and sit there. Blur only counts when we are the top-level document;
@@ -2101,11 +2222,12 @@ function setPaused(p) {
   paused = p;
   if (p) {
     pausedAt = performance.now();
+    cancelAnimationFrame(loopRaf);
     dimPaused();
   } else {
     t0 += performance.now() - pausedAt;
     lastFrameAt = 0;
-    requestAnimationFrame(loop);
+    loopRaf = requestAnimationFrame(loop);
   }
 }
 /* all three ask idle() rather than deciding for themselves, so the embedded case
@@ -2127,12 +2249,12 @@ function loop(now) {
      measuring what a frame really costs — and the deadline is pinned to `now`, or it
      would run away at 144Hz and stall the first seconds after you entered. */
   if (entered) {
-    if (now < nextFrameAt) { requestAnimationFrame(loop); return; }
+    if (now < nextFrameAt) { loopRaf = requestAnimationFrame(loop); return; }
     nextFrameAt = nextFrameTime(now, nextFrameAt, 1000 / Math.max(1, P.maxFps || 60));
   } else nextFrameAt = now;
   const t = (now - t0) / 1000;
   const a = performance.now();
-  frame(t);
+  frame(t, true);
   const cpuMs = performance.now() - a;
   /* Regulate on the interval between frames, not on how long frame() held the main
      thread. Most of a frame is GPU work the script clock cannot see — measured 9.1ms
@@ -2155,7 +2277,7 @@ function loop(now) {
       acc = 0; accCpu = 0; fcount = 0;
     }
   }
-  requestAnimationFrame(loop);
+  loopRaf = requestAnimationFrame(loop);
 }
 
 /* ============================================================
@@ -2938,6 +3060,37 @@ async function selftest() {
     undoStep = null; rungBlocked.fx = rungBlocked.cell = rungBlocked.scale = false;
   }
 
+  /* The live loop takes its grid from WebGL, a frame late. It has to be the same grid:
+     checked against an exact box over the source's own pixels (float32 cell edges, as
+     the shader computes them), not against the canvas path, whose halvings drift by a
+     fraction of a pixel wherever the size does not divide evenly. */
+  {
+    drawSource(2.3);
+    if (GLG) GLG.cols = -1;                              /* nothing in flight from before */
+    let got = null;
+    for (let i = 0; i < 60 && !got; i++) { got = glGridSample(); if (!got && GLG) await new Promise(r => setTimeout(r, 16)); }
+    if (GLG === false) ok(true, "no WebGL2: the canvas grid stands in");
+    else {
+      const px = sctx.getImageData(0, 0, W, H).data, kx = Math.fround(W / cols), ky = Math.fround(H / rows);
+      const span = (c, k, n) => { const a = Math.floor(Math.fround(c * k));
+                                  return [a, Math.min(n, Math.max(a + 1, Math.floor(Math.fround((c + 1) * k))))]; };
+      let off = 0, worst = 0;
+      for (let cy = 0; got && cy < rows; cy++) {
+        const [y0, y1] = span(cy, ky, H);
+        for (let cx = 0; cx < cols; cx++) {
+          const [x0, x1] = span(cx, kx, W);
+          for (let ch = 0; ch < 3; ch++) {
+            let sum = 0;
+            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) sum += px[(y * W + x) * 4 + ch];
+            const d = Math.abs(Math.round(sum / ((x1 - x0) * (y1 - y0))) - got[(cy * cols + cx) * 4 + ch]);
+            if (d > 1) off++; if (d > worst) worst = d;
+          }
+        }
+      }
+      ok(got && off === 0, "the GPU grid is an exact box over the source (" + (got ? off + " values off, worst " + worst : "never arrived") + ")");
+    }
+  }
+
   /* nothing the sweep touched may leak into the running page */
   {
     const now = JSON.parse(JSON.stringify(P));
@@ -3117,6 +3270,9 @@ function bench() {
   const wasScale = renderScale, wasCell = P.cellSize, wasAt = enterAt;
   const wasAQ = P.autoQuality, wasPause = P.pauseWhenIdle;
   P.autoQuality = false; P.pauseWhenIdle = false; enterAt = performance.now() - 1e6;
+  /* the door boots with every effect off; pricing them while off measured nothing */
+  const wasBare = !!fxSaved;
+  setEmbellishment(true);
   const rows_ = ["scale  cell   grid       Mpx    ms/frame   snap"];
   for (const sc of scales) for (const cs of cells) {
     renderScale = sc; P.cellSize = cs; resize();
@@ -3185,7 +3341,9 @@ function bench() {
   for (const k of Object.keys(wasGlyph)) GLYPHONLY[k] = wasGlyph[k];
   rows_.push("  (baseline all on) " + whole.toFixed(1));
   renderScale = wasScale; P.cellSize = wasCell; enterAt = wasAt;
-  P.autoQuality = wasAQ; P.pauseWhenIdle = wasPause; resize();
+  P.autoQuality = wasAQ; P.pauseWhenIdle = wasPause;
+  if (wasBare) setEmbellishment(false);
+  resize();
   frame(1.5);                     /* put the picture back; a blank canvas reads as a crash */
   const out = "BENCH  dpr " + (devicePixelRatio || 1) + "  " + vpW + "x" + vpH +
               "\n" + rows_.join("\n");
@@ -3214,12 +3372,12 @@ async function boot() {
   if (Q.has("bench")) { bench(); return; }        /* diagnostic only: no loop, no door */
   t0 = performance.now();   /* t starts now, not at parse time, whatever the font cost */
   if (P.pauseWhenIdle && idle()) { frame(0); setPaused(true); }   /* loaded in the background */
-  else requestAnimationFrame(loop);
+  else loopRaf = requestAnimationFrame(loop);
 }
 /* The webfont and the Georgia fallback measure differently, so painting before it
    resolves shows a lockup that jumps width a few frames in. Wait for it — with a
    timeout so offline (or a slow CDN) still starts, on the fallback, without a jump. */
-Promise.race([FONT_READY, new Promise(r => setTimeout(r, 1500))]).then(boot);
+Promise.race([Promise.all([FONT_READY, FIG_READY]), new Promise(r => setTimeout(r, 1500))]).then(boot);
 </script>
 </body>
 </html>
