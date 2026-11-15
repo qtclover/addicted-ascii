@@ -1,9 +1,10 @@
 # addicted
 
-A wordmark rendered as a live grid of hex glyphs, sitting on a reflective floor
-with a spinning [donut.c](https://www.a1k0n.net/2011/07/20/donut-math.html) torus
-beside it. Recreation of the [21st.dev ASCII effect](https://21st.dev/community/ascii)
-in plain Canvas2D.
+My personal landing page: the word "addicted" and a figure (`fig.webp`), rendered
+as a live grid of hex glyphs on a reflective floor, with a contact button below.
+Based on the [21st.dev ASCII effect](https://21st.dev/community/ascii), rebuilt in
+plain Canvas2D. Add `?donut` to swap the figure for a spinning
+[donut.c](https://www.a1k0n.net/2011/07/20/donut-math.html) torus.
 
 No build step, no dependencies. Open `index.html`.
 
@@ -36,11 +37,12 @@ frame throughout, so there is nothing to swap in and nothing to jump.
 | `?bench` | Sweeps render scale x cell size, then breaks one frame into stages and prices each post-effect. Flushed with a pixel readback, because canvas work is deferred and unflushed numbers lie |
 | `?q=sharp` / `?q=smooth` | Pin the trade: never degrade, or buy framerate with resolution. Default walks the ladder |
 | `?fx=off` | Start on the second rung: no post-effects, no backdrop haze |
+| `?donut` | Spinning donut.c torus instead of the figure |
 
 ## How it works
 
-1. `drawSource()` composes the frame that gets ASCII-ified — shaded torus, wordmark,
-   tilt, mirrored floor reflection. Stands in for the photo the original effect uses.
+1. `drawSource()` composes the frame that gets ASCII-ified — figure (or shaded torus),
+   wordmark, tilt, mirrored floor reflection. Stands in for the photo the original effect uses.
 2. The source is downscaled to one pixel per cell by repeated halving (bilinear at
    each step is a real box filter, and far cheaper than one `imageSmoothingQuality:
    "high"` draw), then each cell becomes a glyph or shape.
