@@ -28,7 +28,9 @@
      --word  the word's face-on width; the 3D is sized to it
      --hw    Adam's cut-out width (God's is the same scale: 1256/1269 of it)
      --dx/dy where each fingertip sits, off the centre
-     --tilt  the arms' angle: level on a wide screen, a diagonal on a tall one */
+     --tilt  the arms' angle: level on a wide screen, a diagonal on a tall one
+     --reach how far each hand breathes toward the word: well short of its clearance
+     --in    how far each arm slides in from on arrival */
   .scene {
     position: absolute; inset: 0;
     --word: min(30cqw, 62cqh);
@@ -37,6 +39,8 @@
     --dx: calc(var(--word) / 2 + var(--gap));
     --dy: 1.2cqh;                  /* on the ceiling God's finger sits a touch above Adam's */
     --tilt: 0deg;
+    --reach: calc(var(--word) * .035);
+    --in: calc(var(--hw) * .35);
   }
   /* A phone is the reference's native shape, and a level band there is a caption in a
      void. Turned onto a diagonal the arms get the screen's height to come in from:
@@ -56,7 +60,18 @@
   }
   .hand { position: absolute; height: auto; pointer-events: none; user-select: none; -webkit-user-drag: none;
           rotate: var(--tilt); opacity: 0; transition: opacity 1.2s ease; }
-  .hand.in { opacity: 1; }
+  /* Each arm slides in along its own length as it fades up, then breathes: a slow
+     reach toward the other and back, the fingertips closing a little and never
+     meeting. `transform` works in the arm's own rotated frame, so on the diagonal
+     they slide and reach along the diagonal too. */
+  .hand.in { opacity: 1; animation: var(--arrive) 1.8s cubic-bezier(.2, .7, .2, 1) both,
+                                    var(--breathe) 3.2s ease-in-out 1.8s infinite alternate; }
+  #adam { --arrive: adam-in; --breathe: adam-reach; }
+  #god  { --arrive: god-in;  --breathe: god-reach; }
+  @keyframes adam-in    { from { transform: translateX(calc(-1 * var(--in))); } to { transform: none; } }
+  @keyframes god-in     { from { transform: translateX(var(--in)); } to { transform: none; } }
+  @keyframes adam-reach { from { transform: none; } to { transform: translateX(var(--reach)); } }
+  @keyframes god-reach  { from { transform: none; } to { transform: translateX(calc(-1 * var(--reach))); } }
   /* each cut-out pinned by its index fingertip (pixel positions printed by cutout.py) */
   #adam { width: var(--hw);
           left: calc(50cqw - var(--dx) - var(--hw) * 0.99291);              /* tip x 1260 / 1269 */
@@ -69,6 +84,7 @@
   .tip { position: absolute; width: 0; height: 0; }
   #tipA { left: calc(50cqw - var(--dx)); top: calc(50cqh + var(--dy)); }
   #tipG { left: calc(50cqw + var(--dx)); top: calc(50cqh - var(--dy)); }
+  #reach { position: absolute; width: var(--reach); height: 0; }
   #wordbox { position: absolute; left: 50cqw; top: 50cqh; width: var(--word); height: 0; }
 
   /* the faint light the word throws */
@@ -76,13 +92,21 @@
           margin: calc(var(--word) * -.21) 0 0 calc(var(--word) * -.65); pointer-events: none; opacity: 0;
           background: radial-gradient(closest-side, rgba(255, 255, 255, .085), rgba(255, 255, 255, .03) 60%, transparent);
           transition: opacity 1.2s ease; will-change: transform; }
-  #word { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; transition: opacity .9s ease; }
+  /* the word rises out of the dark between them as the arms arrive */
+  #word { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0;
+          translate: 0 calc(var(--word) * .06);
+          transition: opacity 1.4s ease .5s, translate 1.8s cubic-bezier(.2, .7, .2, 1) .5s; }
+  #word.in { translate: 0 0; }
   /* the word as type: until the 3D arrives, or instead of it */
   #still { position: absolute; left: 50cqw; top: 50cqh; margin: 0; translate: -50% -54%; white-space: nowrap;
            color: #f2f3f5; font: 400 calc(var(--word) / 3.6)/1 "Instrument Serif", Georgia, serif;
            opacity: 0; transition: opacity .6s ease; pointer-events: none; }
   #word.in, #still.in, #glow.in { opacity: 1; }
-  @media (prefers-reduced-motion: reduce) { .hand, #glow, #word, #still { transition: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .hand, #glow, #word, #still { transition: none; }
+    .hand.in { animation: none; }
+    #word { translate: none; }
+  }
 </style>
 <noscript><style>.hand, #still { opacity: 1; }</style></noscript>
 </head>
@@ -92,7 +116,7 @@
        aria-label="Adam's and God's hands from Michelangelo's Creation of Adam reach toward each other across a black field, and between their fingertips the word addicted sways gently in glossy white.">
     <img class="hand" id="adam" src="hands/adam.webp" width="1269" height="474" alt="" decoding="async">
     <img class="hand" id="god" src="hands/god.webp" width="1256" height="532" alt="" decoding="async">
-    <div class="tip" id="tipA"></div><div class="tip" id="tipG"></div><div id="wordbox"></div>
+    <div class="tip" id="tipA"></div><div class="tip" id="tipG"></div><div id="wordbox"></div><div id="reach"></div>
     <div id="glow"></div>
     <canvas id="word"></canvas>
     <p id="still" aria-hidden="true">addicted</p>
@@ -294,7 +318,11 @@ async function selftest() {
   const res = [], ok = (c, m) => { res.push(c); console[c ? "log" : "error"]((c ? "PASS " : "FAIL ") + m); };
   const vw = renderer.domElement.clientWidth, vh = renderer.domElement.clientHeight;
   const pt = id => { const r = $(id).getBoundingClientRect(); return [r.left, r.top]; };
-  const A = pt("tipA"), G = pt("tipG");
+  /* the tips as near as the breathing brings them: each moved --reach along its arm */
+  const reach = $("reach").getBoundingClientRect().width;
+  const tilt = (parseFloat(getComputedStyle($("adam")).rotate) || 0) * Math.PI / 180;
+  const [A0, G0] = [pt("tipA"), pt("tipG")], ux = Math.cos(tilt) * reach, uy = Math.sin(tilt) * reach;
+  const A = [A0[0] + ux, A0[1] + uy], G = [G0[0] - ux, G0[1] - uy];
   const box = new THREE.Box3(), v = new THREE.Vector3();
   let worst = Infinity;
   const yawMax = Math.max(SWAY, YAW, Math.abs(POSE));
@@ -313,7 +341,7 @@ async function selftest() {
     for (const [x, y] of [A, G]) worst = Math.min(worst, Math.max(x0 - x, x - x1, y0 - y, y - y1));
   }
   word.rotation.x = 0;
-  ok(worst > 4, "the word never reaches a fingertip (closest " + worst.toFixed(1) + "px outside its bounds)");
+  ok(worst > 4, "the word never reaches a fingertip, even at the hands' nearest (closest " + worst.toFixed(1) + "px outside its bounds)");
   await handsReady;
   ok($("adam").naturalWidth === 1269 && $("god").naturalWidth === 1256, "both hands decoded at full size");
   const seen = id => { const r = $(id).getBoundingClientRect(); return r.right > vw * 0.05 && r.left < vw * 0.95 && r.bottom > 0 && r.top < vh; };

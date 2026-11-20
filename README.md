@@ -102,7 +102,9 @@ tall screen turns the composition onto a diagonal. The word sways ±20° about f
 phone's tilt instead. It sits under a studio of hard lights for the gloss; it renders at the device's pixel ratio up to 3. Until three.js and
 the model arrive (or if they never do) the word is set as type. `?selftest` projects
 the word and checks it never reaches a fingertip, and that both hands and the word
-reach the screen. Reduced motion holds it still.
+reach the screen. On arrival each arm slides in along its length and the word rises
+out of the dark; then the hands breathe, reaching a little toward each other and back,
+and the selftest checks the clearance at their nearest. Reduced motion holds it all still.
 
 ## Credits
 
