@@ -85,7 +85,7 @@ one-pixel resize jitter from switching the entire composition back and forth.
 
 A second piece: Adam's and God's hands from Michelangelo's *Creation of Adam*, cut out
 of the fresco itself, reaching across a black field while a glossy white 3D "addicted"
-turns between their fingertips. Unlike `index.html` it has dependencies: three.js r170
+stands still between their fingertips. Unlike `index.html` it has dependencies: three.js r170
 from jsDelivr (pinned, no SRI) and the assets in `hands/`.
 
 - `adam.webp`, `god.webp`: the fresco's forearms (public domain, Wikimedia Commons'
@@ -97,13 +97,11 @@ from jsDelivr (pinned, no SRI) and the assets in `hands/`.
   Cycles still).
 
 The layout is CSS (container queries), so the hands arrive with no script at all. A
-tall screen turns the composition onto a diagonal. The word never reads backwards:
-past side-on it carries on from the other side at full depth, under a studio of hard lights so the gloss
-travels across it; it renders at the device's pixel ratio up to 3. Until three.js and
+tall screen turns the composition onto a diagonal. The word holds still, turned
+slightly to show its depth, under a studio of hard lights for the gloss; it renders at the device's pixel ratio up to 3. Until three.js and
 the model arrive (or if they never do) the word is set as type. `?selftest` projects
-the word through a whole turn and checks it never reaches a fingertip, never shows its
-back, and that both hands and the word reach the screen. Reduced motion gets one still
-frame.
+the word and checks it never reaches a fingertip, and that both hands and the word
+reach the screen.
 
 ## Credits
 

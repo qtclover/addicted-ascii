@@ -41,7 +41,7 @@
   /* A phone is the reference's native shape, and a level band there is a caption in a
      void. Turned onto a diagonal the arms get the screen's height to come in from:
      Adam from the lower left, God from the upper right, the word large between them.
-     The fingertips sit off the word's corners, outside its turning box. Everything
+     The fingertips sit off the word's corners, outside its box. Everything
      here is a multiple of the word, and the word answers to the height as well as the
      width, so a 3:4 tablet gets the phone's composition rather than hands stranded in
      the corners. */
@@ -71,7 +71,7 @@
   #tipG { left: calc(50cqw + var(--dx)); top: calc(50cqh - var(--dy)); }
   #wordbox { position: absolute; left: 50cqw; top: 50cqh; width: var(--word); height: 0; }
 
-  /* the faint light the word throws: sized here, only narrowed per frame as it turns */
+  /* the faint light the word throws */
   #glow { position: absolute; left: 50cqw; top: 50cqh; width: calc(var(--word) * 1.3); height: calc(var(--word) * .42);
           margin: calc(var(--word) * -.21) 0 0 calc(var(--word) * -.65); pointer-events: none; opacity: 0;
           background: radial-gradient(closest-side, rgba(255, 255, 255, .085), rgba(255, 255, 255, .03) 60%, transparent);
@@ -89,7 +89,7 @@
 <body>
 <div id="stage">
   <div class="scene" role="img"
-       aria-label="Adam's and God's hands from Michelangelo's Creation of Adam reach toward each other across a black field, and between their fingertips the word addicted turns slowly in glossy white.">
+       aria-label="Adam's and God's hands from Michelangelo's Creation of Adam reach toward each other across a black field, and between their fingertips stands the word addicted in glossy white.">
     <img class="hand" id="adam" src="hands/adam.webp" width="1269" height="474" alt="" decoding="async">
     <img class="hand" id="god" src="hands/god.webp" width="1256" height="532" alt="" decoding="async">
     <div class="tip" id="tipA"></div><div class="tip" id="tipG"></div><div id="wordbox"></div>
@@ -102,7 +102,7 @@
 "use strict";
 /* ============================================================
    "almost" — Adam and God from the Sistine ceiling, the word
-   turning in the gap. The hands are the fresco itself, cut out
+   standing in the gap. The hands are the fresco itself, cut out
    (hands/cutout.py) and placed by CSS; the word is a Blender
    model of the wordmark (hands/word.py) drawn live with three.js,
    loaded so that a slow or missing CDN costs the word its third
@@ -111,26 +111,15 @@
    ============================================================ */
 const Q = new URLSearchParams(location.search);
 const $ = id => document.getElementById(id);
-const TAU = Math.PI * 2;
-const SPIN = TAU / 5.4;          /* the reference's pace: side-on twice every 5.4s */
-const START = -0.35, STILL = -0.5;
+const POSE = -0.2;               /* still, turned ~11°: square enough to read, enough to show its depth */
 const FOV = 20, DIST = 12;
 const PIXEL_CAP = 8.3e6;         /* device pixels: a 4K screen's worth, so DPR 3 phones render 1:1 */
-const RM = matchMedia("(prefers-reduced-motion: reduce)");
 
 /* hands: each fades up the moment it has decoded, whatever the word is doing */
 const handsReady = Promise.all(["adam", "god"].map(id => {
   const img = $(id);
   return img.decode().catch(() => {}).then(() => img.classList.add("in"));
 }));
-
-/* The back of the word reads "addicted" too, never backwards. A solid turned past
-   side-on shows its back face; mirrored left to right, that back face spells the word
-   forwards again. The slab is the same front and back, so a turn of θ past side-on
-   with the mirror is exactly the unmirrored word at θ - 180°: the word turns on
-   through the front half and, at side-on, carries on from the other side at full
-   depth. Angle in, angle as drawn out. */
-const front = a => ((a + Math.PI / 2) % Math.PI + Math.PI) % Math.PI - Math.PI / 2;
 
 let three = null;   /* set once the 3D is up */
 const showStill = on => { $("still").classList.toggle("in", on); $("glow").classList.add("in"); };
@@ -222,30 +211,18 @@ async function loadWord() {
   return { THREE, renderer, camera, word, fit, draw };
 }
 
-let raf = 0, t0 = 0;
-function frame(now) {
-  raf = 0;
-  three.draw(front(START + (now - t0) / 1000 * SPIN));
-  if (!RM.matches) raf = requestAnimationFrame(frame);
-}
-function start() {
-  if (raf) cancelAnimationFrame(raf), raf = 0;
-  if (!three) return;
-  if (RM.matches) three.draw(STILL);
-  else { t0 = performance.now(); raf = requestAnimationFrame(frame); }
-}
-addEventListener("resize", () => { if (three) { three.fit(); if (RM.matches) three.draw(STILL); } });
-RM.addEventListener("change", start);
+/* the word does not move: it is drawn once, and again only when the screen resizes */
+addEventListener("resize", () => { if (three) { three.fit(); three.draw(POSE); } });
 
 loadWord().then(t => {
   three = t;
   clearTimeout(stillTimer);
   three.fit();
-  three.draw(RM.matches ? STILL : START);
+  three.draw(POSE);
   /* if the type is up, it leaves before the 3D arrives: never two words at once */
   const typeUp = $("still").classList.contains("in");
   showStill(false);
-  setTimeout(() => { $("word").classList.add("in"); start(); }, typeUp ? 450 : 0);
+  setTimeout(() => $("word").classList.add("in"), typeUp ? 450 : 0);
   if (Q.has("selftest")) selftest();
 }).catch(e => {
   console.error("3D word unavailable, showing it as type:", e);
@@ -254,9 +231,9 @@ loadWord().then(t => {
 });
 
 /* ---------- ?selftest ----------
-   The word turns between the fingertips without reaching either: project its bounds
-   through the whole turn and keep each tip outside them. Then the hands and the word
-   must actually be on the screen, and the word must never read backwards. */
+   The word stands between the fingertips without reaching either: project its bounds
+   and keep each tip outside them. Then the hands and the word must actually be on
+   the screen. */
 async function selftest() {
   const { THREE, camera, word, renderer, draw } = three;
   const res = [], ok = (c, m) => { res.push(c); console[c ? "log" : "error"]((c ? "PASS " : "FAIL ") + m); };
@@ -265,8 +242,8 @@ async function selftest() {
   const A = pt("tipA"), G = pt("tipG");
   const box = new THREE.Box3(), v = new THREE.Vector3();
   let worst = Infinity;
-  for (let i = 0; i < 360; i++) {
-    word.rotation.y = i * TAU / 360; word.updateMatrixWorld(true);
+  {
+    word.rotation.y = POSE; word.updateMatrixWorld(true);
     box.setFromObject(word, true);
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     for (let c = 0; c < 8; c++) {
@@ -277,15 +254,12 @@ async function selftest() {
     /* how far outside the box each tip is (negative = inside) */
     for (const [x, y] of [A, G]) worst = Math.min(worst, Math.max(x0 - x, x - x1, y0 - y, y - y1));
   }
-  ok(worst > 4, "the turning word never reaches a fingertip (closest " + worst.toFixed(1) + "px outside its bounds)");
-  let mirrored = 0;
-  for (let i = 0; i < 1000; i++) if (Math.cos(front(i * 0.0371)) < -1e-9) mirrored++;
-  ok(mirrored === 0, "the word never reads backwards");
+  ok(worst > 4, "the word never reaches a fingertip (closest " + worst.toFixed(1) + "px outside its bounds)");
   await handsReady;
   ok($("adam").naturalWidth === 1269 && $("god").naturalWidth === 1256, "both hands decoded at full size");
   const seen = id => { const r = $(id).getBoundingClientRect(); return r.right > vw * 0.05 && r.left < vw * 0.95 && r.bottom > 0 && r.top < vh; };
   ok(seen("adam") && seen("god"), "both hands are on screen");
-  draw(0);
+  draw(POSE);
   const gl = renderer.getContext(), px = new Uint8Array(4), dpr = renderer.getPixelRatio();
   const wb = $("wordbox").getBoundingClientRect();
   let ink = 0;
@@ -296,7 +270,6 @@ async function selftest() {
   ok(ink > 200, "the word renders (alpha " + ink + ")");
   ok(Math.abs(dpr - Math.min(devicePixelRatio, 3, Math.sqrt(PIXEL_CAP / (vw * vh)))) < 1e-6, "renders at the device's pixel ratio (" + dpr.toFixed(2) + ")");
   console.log((res.every(Boolean) ? "SELFTEST PASS" : "SELFTEST FAIL") + " (" + vw + "x" + vh + " @" + devicePixelRatio + ")");
-  start();
 }
 </script>
 </body>
