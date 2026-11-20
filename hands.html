@@ -112,8 +112,8 @@
 const Q = new URLSearchParams(location.search);
 const $ = id => document.getElementById(id);
 const TAU = Math.PI * 2;
-const SPIN = TAU / 5.4;          /* the reference's pace: one full turn every 5.4s */
-const START = -0.75, STILL = -0.5;  /* START is a phase (see turn); STILL an angle */
+const SPIN = TAU / 5.4;          /* the reference's pace: side-on twice every 5.4s */
+const START = -0.35, STILL = -0.5;
 const FOV = 20, DIST = 12;
 const PIXEL_CAP = 8.3e6;         /* device pixels: a 4K screen's worth, so DPR 3 phones render 1:1 */
 const RM = matchMedia("(prefers-reduced-motion: reduce)");
@@ -124,11 +124,13 @@ const handsReady = Promise.all(["adam", "god"].map(id => {
   return img.decode().catch(() => {}).then(() => img.classList.add("in"));
 }));
 
-/* A full turn, like a solid object, with its whole depth showing side-on. It eases:
-   slow while the word faces front, quick past the back, where it reads mirrored,
-   so the back is in view for under a third of each turn. Phase p in, angle out. */
-const EASE = 0.7;
-const turn = p => p - EASE * Math.sin(p);
+/* The back of the word reads "addicted" too, never backwards. A solid turned past
+   side-on shows its back face; mirrored left to right, that back face spells the word
+   forwards again. The slab is the same front and back, so a turn of θ past side-on
+   with the mirror is exactly the unmirrored word at θ - 180°: the word turns on
+   through the front half and, at side-on, carries on from the other side at full
+   depth. Angle in, angle as drawn out. */
+const front = a => ((a + Math.PI / 2) % Math.PI + Math.PI) % Math.PI - Math.PI / 2;
 
 let three = null;   /* set once the 3D is up */
 const showStill = on => { $("still").classList.toggle("in", on); $("glow").classList.add("in"); };
@@ -223,7 +225,7 @@ async function loadWord() {
 let raf = 0, t0 = 0;
 function frame(now) {
   raf = 0;
-  three.draw(turn(START + (now - t0) / 1000 * SPIN));
+  three.draw(front(START + (now - t0) / 1000 * SPIN));
   if (!RM.matches) raf = requestAnimationFrame(frame);
 }
 function start() {
@@ -239,7 +241,7 @@ loadWord().then(t => {
   three = t;
   clearTimeout(stillTimer);
   three.fit();
-  three.draw(RM.matches ? STILL : turn(START));
+  three.draw(RM.matches ? STILL : START);
   /* if the type is up, it leaves before the 3D arrives: never two words at once */
   const typeUp = $("still").classList.contains("in");
   showStill(false);
@@ -254,7 +256,7 @@ loadWord().then(t => {
 /* ---------- ?selftest ----------
    The word turns between the fingertips without reaching either: project its bounds
    through the whole turn and keep each tip outside them. Then the hands and the word
-   must actually be on the screen, and the mirrored back must pass quickly. */
+   must actually be on the screen, and the word must never read backwards. */
 async function selftest() {
   const { THREE, camera, word, renderer, draw } = three;
   const res = [], ok = (c, m) => { res.push(c); console[c ? "log" : "error"]((c ? "PASS " : "FAIL ") + m); };
@@ -276,9 +278,9 @@ async function selftest() {
     for (const [x, y] of [A, G]) worst = Math.min(worst, Math.max(x0 - x, x - x1, y0 - y, y - y1));
   }
   ok(worst > 4, "the turning word never reaches a fingertip (closest " + worst.toFixed(1) + "px outside its bounds)");
-  let back = 0;
-  for (let i = 0; i < 1000; i++) if (Math.cos(turn(i * TAU / 1000)) < 0) back++;
-  ok(back < 340, "the mirrored back is in view for under a third of a turn (" + (back / 10).toFixed(1) + "%)");
+  let mirrored = 0;
+  for (let i = 0; i < 1000; i++) if (Math.cos(front(i * 0.0371)) < -1e-9) mirrored++;
+  ok(mirrored === 0, "the word never reads backwards");
   await handsReady;
   ok($("adam").naturalWidth === 1269 && $("god").naturalWidth === 1256, "both hands decoded at full size");
   const seen = id => { const r = $(id).getBoundingClientRect(); return r.right > vw * 0.05 && r.left < vw * 0.95 && r.bottom > 0 && r.top < vh; };
