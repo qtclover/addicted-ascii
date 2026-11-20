@@ -179,11 +179,15 @@ async function loadWord() {
   const scene = new THREE.Scene();
   scene.environment = env;
   /* diffuse held back so the faces rest near 205: room above for the highlights */
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x202020, 0.35));
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x202020, 0.15));
   const key = new THREE.DirectionalLight(0xffffff, 0.6); key.position.set(-3, 4, 3); scene.add(key);
   const back = new THREE.DirectionalLight(0xffffff, 0.6); back.position.set(2, 1, -4); scene.add(back);
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
   camera.position.set(0, 0, DIST);
+  /* a weak fill from the lens: mid-turn the faces turn from the key and went silver;
+     this holds them white without touching the highlight bands */
+  const fill = new THREE.PointLight(0xffffff, 0, 0, 0);
+  fill.intensity = 1.3; camera.add(fill); scene.add(camera);
 
   const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync("hands/addicted.glb");
   const word = gltf.scene;
@@ -243,7 +247,7 @@ loadWord().then(t => {
   /* if the type is up, it leaves before the 3D arrives: never two words at once */
   const typeUp = $("still").classList.contains("in");
   showStill(false);
-  setTimeout(() => { $("word").classList.add("in"); start(); }, typeUp ? 650 : 0);
+  setTimeout(() => { $("word").classList.add("in"); start(); }, typeUp ? 450 : 0);
   if (Q.has("selftest")) selftest();
 }).catch(e => {
   console.error("3D word unavailable, showing it as type:", e);
