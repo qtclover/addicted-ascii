@@ -97,12 +97,12 @@ from jsDelivr (pinned, no SRI) and the assets in `hands/`.
   Cycles still).
 
 The layout is CSS (container queries), so the hands arrive with no script at all. A
-tall screen turns the composition onto a diagonal. The word turns through its front
-half only, so it never reads backwards, under a studio of hard lights so the gloss
+tall screen turns the composition onto a diagonal. The word makes full turns, slow
+facing front and quick past its mirrored back, under a studio of hard lights so the gloss
 travels across it; it renders at the device's pixel ratio up to 3. Until three.js and
 the model arrive (or if they never do) the word is set as type. `?selftest` projects
-the word through a whole turn and checks it never reaches a fingertip, never shows its
-back, and that both hands and the word reach the screen. Reduced motion gets one still
+the word through a whole turn and checks it never reaches a fingertip, that its back
+passes quickly, and that both hands and the word reach the screen. Reduced motion gets one still
 frame.
 
 ## Credits
