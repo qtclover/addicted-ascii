@@ -9,6 +9,8 @@
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" crossorigin>
 <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js" crossorigin>
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/utils/BufferGeometryUtils.js" crossorigin>
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/meshopt_decoder.module.js" crossorigin>
 <link rel="preload" href="hands/addicted.glb" as="fetch" type="model/gltf-binary" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,13 +43,16 @@
   /* A phone is the reference's native shape, and a level band there is a caption in a
      void. Turned onto a diagonal the arms get the screen's height to come in from:
      Adam from the lower left, God from the upper right, the word large between them.
-     The fingertips sit off the word's corners, outside its turning box. */
+     The fingertips sit off the word's corners, outside its turning box. Everything
+     here is a multiple of the word, and the word answers to the height as well as the
+     width, so a 3:4 tablet gets the phone's composition rather than hands stranded in
+     the corners. */
   @container (max-aspect-ratio: 4/5) {
     .scene {
-      --word: 58cqw;
-      --hw: 135cqw;
-      --dx: 15cqw;
-      --dy: 25cqw;
+      --word: min(58cqw, 34cqh);
+      --hw: calc(var(--word) * 2.33);
+      --dx: calc(var(--word) * .235);
+      --dy: calc(var(--word) * .37);
       --tilt: -58deg;
     }
   }
@@ -141,7 +146,9 @@ async function loadWord() {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true,
                                              powerPreference: "high-performance", preserveDrawingBuffer: Q.has("selftest") });
   renderer.setClearColor(0x000000, 0);
-  renderer.toneMapping = THREE.NeutralToneMapping;   /* keeps a white white */
+  /* no tone curve: a reflected strip must be free to clip to pure white, and a
+     compressing curve holds every highlight a few levels short of it */
+  renderer.toneMapping = THREE.NoToneMapping;
 
   /* The studio the word reflects: black, with hard softboxes and strips. Its gloss is
      those lights sliding across the faces as it turns; an evenly lit room would only
@@ -160,17 +167,20 @@ async function loadWord() {
   panel(4, 0.5, 0, 1.5, -6, 2.0);       /* back strip: an edge light without a colour cast */
   /* Narrow uprights in front, where the flat faces look. A face turning by θ swings its
      reflection by 2θ, so each strip crosses the word as a streak once a pass. */
-  panel(0.35, 9, -2.6, 0.5, 9, 7.0);
-  panel(0.25, 9, 3.4, 0.5, 8.5, 5.0);
-  panel(0.5, 9, -7.5, 0.5, 6, 4.0);
+  /* A white dielectric reflects ~4% face-on, so these are far brighter than they look:
+     at ~50 their 4% clips to white, a hard band against a face lit to ~205. */
+  panel(0.35, 9, -2.6, 0.5, 9, 55);
+  panel(0.25, 9, 3.4, 0.5, 8.5, 40);
+  panel(0.5, 9, -7.5, 0.5, 6, 30);
   const pmrem = new THREE.PMREMGenerator(renderer);
   const env = pmrem.fromScene(studio, 0.015).texture;
   pmrem.dispose();
 
   const scene = new THREE.Scene();
   scene.environment = env;
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x202020, 1.9));
-  const key = new THREE.DirectionalLight(0xffffff, 1.8); key.position.set(-3, 4, 3); scene.add(key);
+  /* diffuse held back so the faces rest near 205: room above for the highlights */
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x202020, 0.35));
+  const key = new THREE.DirectionalLight(0xffffff, 0.6); key.position.set(-3, 4, 3); scene.add(key);
   const back = new THREE.DirectionalLight(0xffffff, 0.6); back.position.set(2, 1, -4); scene.add(back);
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
   camera.position.set(0, 0, DIST);
@@ -179,10 +189,11 @@ async function loadWord() {
   const word = gltf.scene;
   word.traverse(o => {
     if (o.isMesh) o.material = new THREE.MeshPhysicalMaterial({
-      color: 0xffffff, roughness: 0.1, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.03
+      color: 0xb0b0b0, roughness: 0.03, metalness: 0, clearcoat: 1, clearcoatRoughness: 0
     });
   });
   const modelW = new THREE.Box3().setFromObject(word).getSize(new THREE.Vector3()).x;
+  let unit = 1;
   scene.add(word);
 
   /* face-on, the model spans exactly the width the layout left for it */
@@ -193,11 +204,16 @@ async function loadWord() {
     camera.aspect = vw / vh;
     camera.updateProjectionMatrix();
     const unitsPerPx = 2 * DIST * Math.tan(FOV * Math.PI / 360) * camera.aspect / vw;
-    word.scale.setScalar($("wordbox").getBoundingClientRect().width * unitsPerPx / modelW);
+    unit = $("wordbox").getBoundingClientRect().width * unitsPerPx / modelW;
   };
   const glow = $("glow");
+  /* Edge-on, the slab thins to a hairline: the wrap from +90° to -90° swaps which end
+     faces the camera, and at full depth the silhouette jumped from the "a" end to the
+     "d" end in one frame. With no depth there, both sides of the wrap are one line. */
   const draw = angle => {
+    const c = Math.abs(Math.cos(angle)), k = Math.min(1, Math.max(0, c / 0.3));
     word.rotation.y = angle;
+    word.scale.set(unit, unit, unit * Math.max(0.02, k * k * (3 - 2 * k)));
     glow.style.transform = "scaleX(" + (0.3 + 0.7 * Math.abs(Math.cos(angle))).toFixed(3) + ")";
     renderer.render(scene, camera);
   };
@@ -224,9 +240,10 @@ loadWord().then(t => {
   clearTimeout(stillTimer);
   three.fit();
   three.draw(RM.matches ? STILL : START);
-  $("word").classList.add("in");
+  /* if the type is up, it leaves before the 3D arrives: never two words at once */
+  const typeUp = $("still").classList.contains("in");
   showStill(false);
-  start();
+  setTimeout(() => { $("word").classList.add("in"); start(); }, typeUp ? 650 : 0);
   if (Q.has("selftest")) selftest();
 }).catch(e => {
   console.error("3D word unavailable, showing it as type:", e);
