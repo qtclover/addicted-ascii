@@ -8,16 +8,22 @@ plain Canvas2D. Add `?donut` to swap the figure for a spinning
 
 No build step, no dependencies. Open `index.html`.
 
-`hands.html` is a second piece: two sculpted hands after Michelangelo's *Creation of
-Adam*, reaching across a black field while "addicted", in the wordmark's own face,
-turns between their fingertips. One WebGL2 fragment shader, no libraries. The hands
-are signed distance fields (blended tapered capsules, posed in JS) raymarched once per
-resize into a texture, since they never move. The word is drawn to a canvas, turned
-into a distance field and extruded in the shader with bevelled edges, so only the
-middle of the screen costs anything per frame. `?color=ff6a4d` recolours the word;
-`?selftest` checks that the word's turning circle never reaches a finger and that
-both hands and the word reach the screen. Reduced motion gets one still frame; no
-WebGL2 gets the word, still.
+`hands.html` is a second piece: Adam's and God's hands from Michelangelo's *Creation of
+Adam*, cut out of the fresco itself, reaching across a black field while a white 3D
+"addicted" turns between their fingertips. Everything it loads is in `hands/`:
+
+- `adam.webp`, `god.webp`: the fresco's forearms (public domain, Wikimedia Commons'
+  3524px scan), matted with BiRefNet, super-resolved 2x with EDSR, the far end of each
+  arm faded into the dark. `cutout.py` rebuilds them and prints the fingertips the page
+  places.
+- `addicted.glb`: the wordmark modelled in Blender in Instrument Serif, extruded with a
+  rounded bevel, meshopt-compressed to ~0.5MB. `word.py` rebuilds it (`--render` for a
+  Cycles still). The page draws it live with three.js (from jsDelivr), so it is sharp at
+  any size.
+
+`?selftest` projects the word's bounds through a whole turn and checks they never reach
+a fingertip, and that both hands and the word reach the screen. Reduced motion gets one
+still frame; without WebGL or three.js the hands still arrive, with the word as type.
 
 Drop a `music.mp4` beside it for the soundtrack — the entry gate is the click
 browsers require before audio may start, and it fades in over four seconds. With no
