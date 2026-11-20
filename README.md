@@ -8,13 +8,16 @@ plain Canvas2D. Add `?donut` to swap the figure for a spinning
 
 No build step, no dependencies. Open `index.html`.
 
-`hands.html` is a second piece in the same hex-glyph language: two hands after
-Michelangelo's *Creation of Adam*, reaching across the middle of the screen. They
-drift in and out on a slow swell; a pointer or a held finger near the gap pulls
-them to their closest and a spark lights between the fingertips — but they never
-touch. On a phone the meeting turns onto the diagonal. `?selftest` checks that the
-two hands never share a cell and that at least two dark cells always separate them.
-Reduced motion gets one still frame.
+`hands.html` is a second piece: two sculpted hands after Michelangelo's *Creation of
+Adam*, reaching across a black field while "addicted", in the wordmark's own face,
+turns between their fingertips. One WebGL2 fragment shader, no libraries. The hands
+are signed distance fields (blended tapered capsules, posed in JS) raymarched once per
+resize into a texture, since they never move. The word is drawn to a canvas, turned
+into a distance field and extruded in the shader with bevelled edges, so only the
+middle of the screen costs anything per frame. `?color=ff6a4d` recolours the word;
+`?selftest` checks that the word's turning circle never reaches a finger and that
+both hands and the word reach the screen. Reduced motion gets one still frame; no
+WebGL2 gets the word, still.
 
 Drop a `music.mp4` beside it for the soundtrack — the entry gate is the click
 browsers require before audio may start, and it fades in over four seconds. With no
