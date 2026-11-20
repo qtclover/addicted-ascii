@@ -8,23 +8,6 @@ plain Canvas2D. Add `?donut` to swap the figure for a spinning
 
 No build step, no dependencies. Open `index.html`.
 
-`hands.html` is a second piece: Adam's and God's hands from Michelangelo's *Creation of
-Adam*, cut out of the fresco itself, reaching across a black field while a white 3D
-"addicted" turns between their fingertips. Everything it loads is in `hands/`:
-
-- `adam.webp`, `god.webp`: the fresco's forearms (public domain, Wikimedia Commons'
-  3524px scan), matted with BiRefNet, super-resolved 2x with EDSR, the far end of each
-  arm faded into the dark. `cutout.py` rebuilds them and prints the fingertips the page
-  places.
-- `addicted.glb`: the wordmark modelled in Blender in Instrument Serif, extruded with a
-  rounded bevel, meshopt-compressed to ~0.5MB. `word.py` rebuilds it (`--render` for a
-  Cycles still). The page draws it live with three.js (from jsDelivr), so it is sharp at
-  any size.
-
-`?selftest` projects the word's bounds through a whole turn and checks they never reach
-a fingertip, and that both hands and the word reach the screen. Reduced motion gets one
-still frame; without WebGL or three.js the hands still arrive, with the word as type.
-
 Drop a `music.mp4` beside it for the soundtrack — the entry gate is the click
 browsers require before audio may start, and it fades in over four seconds. With no
 file there, the gate still opens and the piece runs silent.
@@ -97,6 +80,30 @@ three controls, and an unverified adjustment is reverted before entry.
 
 Portrait starts below a width/height ratio of 0.8. A two-CSS-pixel deadband prevents
 one-pixel resize jitter from switching the entire composition back and forth.
+
+## hands.html
+
+A second piece: Adam's and God's hands from Michelangelo's *Creation of Adam*, cut out
+of the fresco itself, reaching across a black field while a glossy white 3D "addicted"
+turns between their fingertips. Unlike `index.html` it has dependencies: three.js r170
+from jsDelivr (pinned, no SRI) and the assets in `hands/`.
+
+- `adam.webp`, `god.webp`: the fresco's forearms (public domain, Wikimedia Commons'
+  3524px scan), matted with BiRefNet, super-resolved 2x with EDSR, background seen
+  through the fingers removed, edges decontaminated, the far end of each arm faded into
+  the dark. `cutout.py` rebuilds them and prints the fingertips the CSS pins them by.
+- `addicted.glb`: the wordmark modelled in Blender in Instrument Serif, extruded with a
+  rounded bevel, meshopt-compressed to ~0.5MB. `word.py` rebuilds it (`--render` for a
+  Cycles still).
+
+The layout is CSS (container queries), so the hands arrive with no script at all. A
+tall screen turns the composition onto a diagonal. The word turns through its front
+half only, so it never reads backwards, under a studio of hard lights so the gloss
+travels across it; it renders at the device's pixel ratio up to 3. Until three.js and
+the model arrive (or if they never do) the word is set as type. `?selftest` projects
+the word through a whole turn and checks it never reaches a fingertip, never shows its
+back, and that both hands and the word reach the screen. Reduced motion gets one still
+frame.
 
 ## Credits
 

@@ -7,6 +7,8 @@
 <meta name="description" content="Adam's and God's hands from the Sistine ceiling, with the word addicted turning in the gap between them.">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" crossorigin>
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js" crossorigin>
 <link rel="preload" href="hands/addicted.glb" as="fetch" type="model/gltf-binary" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,212 +22,261 @@
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  #stage { position: fixed; inset: 0; opacity: 0; transition: opacity 1.4s ease; }
-  #stage.on { opacity: 1; }
-  .hand { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none;
-          user-select: none; -webkit-user-drag: none; }
-  /* the faint light the word throws, as in the reference: a real gradient, not drawn */
-  #glow { position: absolute; left: 0; top: 0; pointer-events: none; border-radius: 50%;
-          background: radial-gradient(closest-side, rgba(214, 230, 255, .13), rgba(160, 200, 255, .05) 55%, transparent); }
-  #word { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  /* the word as type, where it would have turned: no WebGL, or three.js never arrived */
-  #still { position: absolute; left: 0; top: 0; margin: 0; display: none; transform: translate(-50%, -54%);
-           color: #eef0f3; font: 400 10px/1 "Instrument Serif", Georgia, serif; white-space: nowrap;
-           text-shadow: 0 0 .35em rgba(190, 215, 255, .35); }
-  .flat #still { display: block; }
-  .flat #word { display: none; }
-  @media (prefers-reduced-motion: reduce) { #stage { transition: none; } }
+  #stage { position: fixed; inset: 0; container-type: size; }
+
+  /* ---------- layout, in CSS so the hands need no script to arrive ----------
+     --word  the word's face-on width; the 3D is sized to it
+     --hw    Adam's cut-out width (God's is the same scale: 1256/1269 of it)
+     --dx/dy where each fingertip sits, off the centre
+     --tilt  the arms' angle: level on a wide screen, a diagonal on a tall one */
+  .scene {
+    position: absolute; inset: 0;
+    --word: min(30cqw, 62cqh);
+    --gap: max(2.8cqw, 20px);
+    --hw: min(42cqw, 105cqh);
+    --dx: calc(var(--word) / 2 + var(--gap));
+    --dy: 1.2cqh;                  /* on the ceiling God's finger sits a touch above Adam's */
+    --tilt: 0deg;
+  }
+  /* A phone is the reference's native shape, and a level band there is a caption in a
+     void. Turned onto a diagonal the arms get the screen's height to come in from:
+     Adam from the lower left, God from the upper right, the word large between them.
+     The fingertips sit off the word's corners, outside its turning box. */
+  @container (max-aspect-ratio: 4/5) {
+    .scene {
+      --word: 58cqw;
+      --hw: 135cqw;
+      --dx: 15cqw;
+      --dy: 25cqw;
+      --tilt: -58deg;
+    }
+  }
+  .hand { position: absolute; height: auto; pointer-events: none; user-select: none; -webkit-user-drag: none;
+          rotate: var(--tilt); opacity: 0; transition: opacity 1.2s ease; }
+  .hand.in { opacity: 1; }
+  /* each cut-out pinned by its index fingertip (pixel positions printed by cutout.py) */
+  #adam { width: var(--hw);
+          left: calc(50cqw - var(--dx) - var(--hw) * 0.99291);              /* tip x 1260 / 1269 */
+          top: calc(50cqh + var(--dy) - var(--hw) * 0.15603);               /* tip y  198 / 1269 */
+          transform-origin: 99.291% 41.772%; }
+  #god  { width: calc(var(--hw) * 0.98976);
+          left: calc(50cqw + var(--dx) - var(--hw) * 0.98976 * 0.006369);   /* tip x    8 / 1256 */
+          top: calc(50cqh - var(--dy) - var(--hw) * 0.98976 * 0.258758);    /* tip y  325 / 1256 */
+          transform-origin: 0.637% 61.090%; }
+  .tip { position: absolute; width: 0; height: 0; }
+  #tipA { left: calc(50cqw - var(--dx)); top: calc(50cqh + var(--dy)); }
+  #tipG { left: calc(50cqw + var(--dx)); top: calc(50cqh - var(--dy)); }
+  #wordbox { position: absolute; left: 50cqw; top: 50cqh; width: var(--word); height: 0; }
+
+  /* the faint light the word throws: sized here, only narrowed per frame as it turns */
+  #glow { position: absolute; left: 50cqw; top: 50cqh; width: calc(var(--word) * 1.3); height: calc(var(--word) * .42);
+          margin: calc(var(--word) * -.21) 0 0 calc(var(--word) * -.65); pointer-events: none; opacity: 0;
+          background: radial-gradient(closest-side, rgba(255, 255, 255, .085), rgba(255, 255, 255, .03) 60%, transparent);
+          transition: opacity 1.2s ease; will-change: transform; }
+  #word { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; transition: opacity .9s ease; }
+  /* the word as type: until the 3D arrives, or instead of it */
+  #still { position: absolute; left: 50cqw; top: 50cqh; margin: 0; translate: -50% -54%; white-space: nowrap;
+           color: #f2f3f5; font: 400 calc(var(--word) / 3.6)/1 "Instrument Serif", Georgia, serif;
+           opacity: 0; transition: opacity .6s ease; pointer-events: none; }
+  #word.in, #still.in, #glow.in { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { .hand, #glow, #word, #still { transition: none; } }
 </style>
+<noscript><style>.hand, #still { opacity: 1; }</style></noscript>
 </head>
 <body>
-<div id="stage" role="img"
-     aria-label="Adam's and God's hands from Michelangelo's Creation of Adam reach toward each other across a black field, and between their fingertips the word addicted turns slowly in white.">
-  <img class="hand" id="adam" src="hands/adam.webp" width="1269" height="474" alt="" decoding="async">
-  <img class="hand" id="god" src="hands/god.webp" width="1256" height="532" alt="" decoding="async">
-  <div id="glow"></div>
-  <canvas id="word"></canvas>
-  <p id="still" aria-hidden="true">addicted</p>
+<div id="stage">
+  <div class="scene" role="img"
+       aria-label="Adam's and God's hands from Michelangelo's Creation of Adam reach toward each other across a black field, and between their fingertips the word addicted turns slowly in glossy white.">
+    <img class="hand" id="adam" src="hands/adam.webp" width="1269" height="474" alt="" decoding="async">
+    <img class="hand" id="god" src="hands/god.webp" width="1256" height="532" alt="" decoding="async">
+    <div class="tip" id="tipA"></div><div class="tip" id="tipG"></div><div id="wordbox"></div>
+    <div id="glow"></div>
+    <canvas id="word"></canvas>
+    <p id="still" aria-hidden="true">addicted</p>
+  </div>
 </div>
 <script>
 "use strict";
 /* ============================================================
    "almost" — Adam and God from the Sistine ceiling, the word
    turning in the gap. The hands are the fresco itself, cut out
-   (hands/cutout.py); the word is a Blender model of the
-   wordmark (hands/word.py), drawn live with three.js so it is
-   sharp at any size. This classic script owns the layout, so the
-   hands still arrive if the 3D never does.
+   (hands/cutout.py) and placed by CSS; the word is a Blender
+   model of the wordmark (hands/word.py) drawn live with three.js,
+   loaded so that a slow or missing CDN costs the word its third
+   dimension and nothing else.
    ?selftest  console checks
    ============================================================ */
-const STAGE = document.getElementById("stage");
-/* each cut-out's size and index fingertip, in its own pixels (printed by cutout.py) */
-const HANDS = {
-  adam: { el: document.getElementById("adam"), w: 1269, h: 474, tip: [1260, 198] },
-  god:  { el: document.getElementById("god"),  w: 1256, h: 532, tip: [8, 325] }
-};
-const LAYOUT = {};
-
-/* The fresco's two hands keep their true scale to each other; only the gap between
-   them is ours, and it is sized to hold the word face-on with air either side.
-   Portrait keeps the reference's horizontal band — the arms run off the screen
-   edges and the hands stay large enough to read. */
-function layout() {
-  const vw = STAGE.clientWidth || innerWidth, vh = STAGE.clientHeight || innerHeight;
-  const portrait = vw < vh * 0.8;
-  const word = portrait ? vw * 0.42 : Math.min(vw * 0.30, vh * 0.62);
-  const gap = portrait ? vw * 0.035 : Math.max(vw * 0.028, 20);
-  const k = (portrait ? vw * 0.95 : Math.min(vw * 0.42, vh * 1.05)) / HANDS.adam.w;
-  const cx = vw / 2, cy = vh / 2;
-  const ax = cx - word / 2 - gap, gx = cx + word / 2 + gap;
-  const put = (h, x, y) => {
-    h.el.style.width = h.w + "px"; h.el.style.height = h.h + "px";
-    h.el.style.transform = "translate(" + (x - h.tip[0] * k).toFixed(2) + "px," + (y - h.tip[1] * k).toFixed(2) + "px) scale(" + k.toFixed(5) + ")";
-  };
-  /* on the ceiling God's finger sits a touch above Adam's */
-  put(HANDS.adam, ax, cy + vh * 0.012);
-  put(HANDS.god, gx, cy - vh * 0.012);
-  Object.assign(LAYOUT, { vw, vh, word, gap, k, cx, cy, adamTip: ax, godTip: gx });
-  const still = document.getElementById("still");
-  still.style.left = cx + "px"; still.style.top = cy + "px";
-  still.style.fontSize = (word / 3.6).toFixed(1) + "px";     /* the face sets ~3.6 ems wide */
-  glow(1);
-}
-/* the glow narrows with the word's projected width as it turns */
-function glow(span) {
-  const g = document.getElementById("glow"), L = LAYOUT;
-  const w = L.word * 1.5, h = L.word * 0.62;
-  g.style.width = w + "px"; g.style.height = h + "px";
-  g.style.transform = "translate(" + (L.cx - w / 2).toFixed(1) + "px," + (L.cy - h / 2).toFixed(1) + "px) scaleX(" + (0.3 + 0.7 * span).toFixed(3) + ")";
-}
-layout();
-addEventListener("resize", () => { layout(); if (window.onLayout) window.onLayout(); });
-
-/* the hands decode, then the stage fades up — with the 3D if it is ready by then,
-   or as soon as it is; and without it if it has not come in a few seconds */
-const handsReady = Promise.all(Object.values(HANDS).map(h => h.el.decode().catch(() => {})));
-let wordReady = false;
-handsReady.then(() => { if (wordReady) STAGE.classList.add("on"); });
-window.wordIsReady = () => { wordReady = true; handsReady.then(() => STAGE.classList.add("on")); };
-setTimeout(() => {
-  if (!wordReady) { document.documentElement.classList.add("flat"); handsReady.then(() => STAGE.classList.add("on")); }
-}, 6000);
-</script>
-<script type="module">
-import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-
 const Q = new URLSearchParams(location.search);
+const $ = id => document.getElementById(id);
 const TAU = Math.PI * 2;
-const SPIN = TAU / 5.4;          /* edge-on twice every 5.4s, the reference's pace */
+const SPIN = TAU / 5.4;          /* the reference's pace: edge-on twice every 5.4s */
 const START = -0.35, STILL = -0.5;
 const FOV = 20, DIST = 12;
+const PIXEL_CAP = 8.3e6;         /* device pixels: a 4K screen's worth, so DPR 3 phones render 1:1 */
 const RM = matchMedia("(prefers-reduced-motion: reduce)");
-const L = LAYOUT;
 
-let renderer;
-try {
-  renderer = new THREE.WebGLRenderer({ canvas: document.getElementById("word"), antialias: true, alpha: true,
-                                       powerPreference: "high-performance", preserveDrawingBuffer: Q.has("selftest") });
-} catch (e) {
-  document.documentElement.classList.add("flat"); window.wordIsReady(); throw e;
-}
-renderer.setClearColor(0x000000, 0);
-/* Neutral keeps a white white; ACES would grey it */
-renderer.toneMapping = THREE.NeutralToneMapping;
+/* hands: each fades up the moment it has decoded, whatever the word is doing */
+const handsReady = Promise.all(["adam", "god"].map(id => {
+  const img = $(id);
+  return img.decode().catch(() => {}).then(() => img.classList.add("in"));
+}));
 
-const scene = new THREE.Scene();
-/* a lit room to reflect: what makes white porcelain read as glossy rather than flat */
-scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.6;
-const key = new THREE.DirectionalLight(0xffffff, 1.2); key.position.set(-3, 4, 3); scene.add(key);
-const rim = new THREE.DirectionalLight(0xa8ccff, 1.4); rim.position.set(3, -1, -3); scene.add(rim);
-const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
-camera.position.set(0, 0, DIST);
+/* A word that reads backwards is not a word. Turn through the front half only and wrap
+   at the edge-on moment, where the slab is a sliver and the jump is not there to see. */
+const front = a => ((a + Math.PI / 2) % Math.PI + Math.PI) % Math.PI - Math.PI / 2;
 
-let word = null, modelW = 1;
-try {
+let three = null;   /* set once the 3D is up */
+const showStill = on => { $("still").classList.toggle("in", on); $("glow").classList.add("in"); };
+/* slow network: the word as type after a beat, swapped for the 3D if that comes later */
+const stillTimer = setTimeout(() => { if (!three) showStill(true); }, 2500);
+
+async function loadWord() {
+  /* dynamic, so a CDN that fails rejects here at once rather than silently never running */
+  const [THREE, { GLTFLoader }, { MeshoptDecoder }] = await Promise.all([
+    import("three"),
+    import("three/addons/loaders/GLTFLoader.js"),
+    import("three/addons/libs/meshopt_decoder.module.js")
+  ]);
+  const canvas = $("word");
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true,
+                                             powerPreference: "high-performance", preserveDrawingBuffer: Q.has("selftest") });
+  renderer.setClearColor(0x000000, 0);
+  renderer.toneMapping = THREE.NeutralToneMapping;   /* keeps a white white */
+
+  /* The studio the word reflects: black, with hard softboxes and strips. Its gloss is
+     those lights sliding across the faces as it turns; an evenly lit room would only
+     make it grey. Built once, prefiltered once. */
+  const studio = new THREE.Scene();
+  const panel = (w, h, x, y, z, k) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    m.material.color.setScalar(k);
+    m.position.set(x, y, z); m.lookAt(0, 0, 0);
+    studio.add(m);
+  };
+  panel(7, 1.6, 0, 5.5, 1.5, 4.0);      /* overhead softbox: the top edges and bevels */
+  panel(0.7, 6, -5.5, 0.5, 2.5, 5.0);   /* tall strip, left: the streak that sweeps the faces */
+  panel(0.5, 6, 5.5, 0.5, 1.0, 3.0);    /* thinner strip, right */
+  panel(2.2, 1.4, -1.5, 2.2, 6, 1.6);   /* small key, front left */
+  panel(4, 0.5, 0, 1.5, -6, 2.0);       /* back strip: an edge light without a colour cast */
+  /* Narrow uprights in front, where the flat faces look. A face turning by θ swings its
+     reflection by 2θ, so each strip crosses the word as a streak once a pass. */
+  panel(0.35, 9, -2.6, 0.5, 9, 7.0);
+  panel(0.25, 9, 3.4, 0.5, 8.5, 5.0);
+  panel(0.5, 9, -7.5, 0.5, 6, 4.0);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromScene(studio, 0.015).texture;
+  pmrem.dispose();
+
+  const scene = new THREE.Scene();
+  scene.environment = env;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x202020, 1.9));
+  const key = new THREE.DirectionalLight(0xffffff, 1.8); key.position.set(-3, 4, 3); scene.add(key);
+  const back = new THREE.DirectionalLight(0xffffff, 0.6); back.position.set(2, 1, -4); scene.add(back);
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
+  camera.position.set(0, 0, DIST);
+
   const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync("hands/addicted.glb");
-  word = gltf.scene;
+  const word = gltf.scene;
   word.traverse(o => {
     if (o.isMesh) o.material = new THREE.MeshPhysicalMaterial({
-      color: 0xe6e8ec, roughness: 0.26, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.06
+      color: 0xffffff, roughness: 0.1, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.03
     });
   });
-  modelW = new THREE.Box3().setFromObject(word).getSize(new THREE.Vector3()).x;
+  const modelW = new THREE.Box3().setFromObject(word).getSize(new THREE.Vector3()).x;
   scene.add(word);
-} catch (e) {
-  console.error(e);
-  document.documentElement.classList.add("flat"); window.wordIsReady(); throw e;
+
+  /* face-on, the model spans exactly the width the layout left for it */
+  const fit = () => {
+    const vw = canvas.clientWidth, vh = canvas.clientHeight;
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 3, Math.sqrt(PIXEL_CAP / (vw * vh))));
+    renderer.setSize(vw, vh, false);
+    camera.aspect = vw / vh;
+    camera.updateProjectionMatrix();
+    const unitsPerPx = 2 * DIST * Math.tan(FOV * Math.PI / 360) * camera.aspect / vw;
+    word.scale.setScalar($("wordbox").getBoundingClientRect().width * unitsPerPx / modelW);
+  };
+  const glow = $("glow");
+  const draw = angle => {
+    word.rotation.y = angle;
+    glow.style.transform = "scaleX(" + (0.3 + 0.7 * Math.abs(Math.cos(angle))).toFixed(3) + ")";
+    renderer.render(scene, camera);
+  };
+  return { THREE, renderer, camera, word, fit, draw };
 }
 
-/* size the model so that, face-on, it spans exactly the gap the layout left for it */
-function fit() {
-  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
-  renderer.setSize(L.vw, L.vh, false);
-  camera.aspect = L.vw / L.vh;
-  camera.updateProjectionMatrix();
-  const unitsPerPx = 2 * DIST * Math.tan(FOV * Math.PI / 360) * camera.aspect / L.vw;
-  word.scale.setScalar(L.word * unitsPerPx / modelW);
-}
-function draw(angle) {
-  word.rotation.y = angle;
-  glow(Math.abs(Math.cos(angle)));
-  renderer.render(scene, camera);
-}
-
-let raf = 0, t0 = performance.now();
+let raf = 0, t0 = 0;
 function frame(now) {
   raf = 0;
-  draw(START + (now - t0) / 1000 * SPIN);
+  three.draw(front(START + (now - t0) / 1000 * SPIN));
   if (!RM.matches) raf = requestAnimationFrame(frame);
 }
 function start() {
   if (raf) cancelAnimationFrame(raf), raf = 0;
-  if (RM.matches) draw(STILL); else raf = requestAnimationFrame(frame);
+  if (!three) return;
+  if (RM.matches) three.draw(STILL);
+  else { t0 = performance.now(); raf = requestAnimationFrame(frame); }
 }
-window.onLayout = () => { fit(); if (RM.matches) draw(STILL); };
+addEventListener("resize", () => { if (three) { three.fit(); if (RM.matches) three.draw(STILL); } });
 RM.addEventListener("change", start);
 
-fit();
-draw(RM.matches ? STILL : START);
-window.wordIsReady();
-start();
+loadWord().then(t => {
+  three = t;
+  clearTimeout(stillTimer);
+  three.fit();
+  three.draw(RM.matches ? STILL : START);
+  $("word").classList.add("in");
+  showStill(false);
+  start();
+  if (Q.has("selftest")) selftest();
+}).catch(e => {
+  console.error("3D word unavailable, showing it as type:", e);
+  clearTimeout(stillTimer);
+  showStill(true);
+});
 
 /* ---------- ?selftest ----------
-   The piece promises the word turns in the gap without ever reaching a finger. Project
-   the model's bounds to the screen at every angle of a turn and hold them inside the
-   two fingertips; then check the hands and the word actually reached the screen. */
-if (Q.has("selftest")) {
+   The word turns between the fingertips without reaching either: project its bounds
+   through the whole turn and keep each tip outside them. Then the hands and the word
+   must actually be on the screen, and the word must never be shown mirrored. */
+async function selftest() {
+  const { THREE, camera, word, renderer, draw } = three;
   const res = [], ok = (c, m) => { res.push(c); console[c ? "log" : "error"]((c ? "PASS " : "FAIL ") + m); };
-  let lo = Infinity, hi = -Infinity;
+  const vw = renderer.domElement.clientWidth, vh = renderer.domElement.clientHeight;
+  const pt = id => { const r = $(id).getBoundingClientRect(); return [r.left, r.top]; };
+  const A = pt("tipA"), G = pt("tipG");
   const box = new THREE.Box3(), v = new THREE.Vector3();
-  for (let a = 0; a < TAU; a += TAU / 180) {
-    word.rotation.y = a; word.updateMatrixWorld(true);
+  let worst = Infinity;
+  for (let i = 0; i < 360; i++) {
+    word.rotation.y = front(i * TAU / 360); word.updateMatrixWorld(true);
     box.setFromObject(word, true);
-    for (let i = 0; i < 8; i++) {
-      v.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).project(camera);
-      const x = (v.x + 1) / 2 * L.vw;
-      lo = Math.min(lo, x); hi = Math.max(hi, x);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let c = 0; c < 8; c++) {
+      v.set(c & 1 ? box.max.x : box.min.x, c & 2 ? box.max.y : box.min.y, c & 4 ? box.max.z : box.min.z).project(camera);
+      const x = (v.x + 1) / 2 * vw, y = (1 - v.y) / 2 * vh;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
     }
+    /* how far outside the box each tip is (negative = inside) */
+    for (const [x, y] of [A, G]) worst = Math.min(worst, Math.max(x0 - x, x - x1, y0 - y, y - y1));
   }
-  ok(lo > L.adamTip && hi < L.godTip, "the turning word stays between the fingertips (" + lo.toFixed(0) + ".." + hi.toFixed(0) +
-     " inside " + L.adamTip.toFixed(0) + ".." + L.godTip.toFixed(0) + ")");
+  ok(worst > 4, "the turning word never reaches a fingertip (closest " + worst.toFixed(1) + "px outside its bounds)");
+  let mirrored = 0;
+  for (let i = 0; i < 1000; i++) if (Math.cos(front(i * 0.0371)) < -1e-9) mirrored++;
+  ok(mirrored === 0, "the word only ever shows its front");
   await handsReady;
-  ok(HANDS.adam.el.naturalWidth === 1269 && HANDS.god.el.naturalWidth === 1256, "both hands decoded at full size");
-  const onScreen = h => { const r = h.el.getBoundingClientRect(); return r.right > 0 && r.left < L.vw && r.bottom > 0 && r.top < L.vh; };
-  ok(onScreen(HANDS.adam) && onScreen(HANDS.god), "both hands are on screen");
+  ok($("adam").naturalWidth === 1269 && $("god").naturalWidth === 1256, "both hands decoded at full size");
+  const seen = id => { const r = $(id).getBoundingClientRect(); return r.right > vw * 0.05 && r.left < vw * 0.95 && r.bottom > 0 && r.top < vh; };
+  ok(seen("adam") && seen("god"), "both hands are on screen");
   draw(0);
-  const gl = renderer.getContext(), px = new Uint8Array(4);
+  const gl = renderer.getContext(), px = new Uint8Array(4), dpr = renderer.getPixelRatio();
+  const wb = $("wordbox").getBoundingClientRect();
   let ink = 0;
-  const dpr = renderer.getPixelRatio();
   for (let i = 0; i < 60; i++) {
-    gl.readPixels(Math.round((L.cx - L.word * 0.45 + L.word * 0.9 * i / 59) * dpr), Math.round(L.cy * dpr), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.readPixels(Math.round((wb.left + wb.width * (0.05 + 0.9 * i / 59)) * dpr), Math.round((vh - wb.top) * dpr), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     ink = Math.max(ink, px[3]);
   }
   ok(ink > 200, "the word renders (alpha " + ink + ")");
-  console.log((res.every(Boolean) ? "SELFTEST PASS" : "SELFTEST FAIL") + " (" + L.vw + "x" + L.vh + ")");
+  ok(Math.abs(dpr - Math.min(devicePixelRatio, 3, Math.sqrt(PIXEL_CAP / (vw * vh)))) < 1e-6, "renders at the device's pixel ratio (" + dpr.toFixed(2) + ")");
+  console.log((res.every(Boolean) ? "SELFTEST PASS" : "SELFTEST FAIL") + " (" + vw + "x" + vh + " @" + devicePixelRatio + ")");
   start();
 }
 </script>

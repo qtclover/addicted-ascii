@@ -50,6 +50,26 @@ def finish(im, fade_from, fade_to, name, flip):
     n, lab, stats, _ = cv2.connectedComponentsWithStats((a > 128).astype(np.uint8), 8)
     keep = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
     a *= cv2.dilate((lab == keep).astype(np.uint8), np.ones((9, 9), np.uint8))
+    # Sky through a gap between fingers is background, however the matte scored it:
+    # blue-grey with no warmth in it. Skin and the plaster both run warm (R well above
+    # B), so this takes the sky and nothing else.
+    warm = im[..., 0] - im[..., 2]
+    a[(warm < 15) & (im[..., :3].mean(axis=2) > 70)] = 0   # light and cool; deep shadow is spared
+    # Then no partial alpha inside the silhouette: more than 2.5px from the matte's
+    # edge a pixel is arm or it is not. Partial alpha stays only as edge antialiasing.
+    b = (a > 128).astype(np.uint8)
+    edge_d = np.where(b > 0, cv2.distanceTransform(b, cv2.DIST_L2, 3),
+                      cv2.distanceTransform(1 - b, cv2.DIST_L2, 3))
+    inner = edge_d > 2.5
+    a[inner] = np.where(b[inner] > 0, 255, 0)
+    assert not ((a > 15) & (a < 240) & inner).any()
+    # Edge pixels keep their alpha but take their colour from the solid arm beside
+    # them: as matted they are half plaster or sky, and on black that reads as a halo.
+    solid = (a >= 250).astype(np.float32)
+    num = cv2.GaussianBlur(im[..., :3] * solid[..., None], (0, 0), 2.0)
+    den = cv2.GaussianBlur(solid, (0, 0), 2.0)[..., None]
+    edge = (a > 0) & (a < 250) & (den[..., 0] > 0.02)
+    im[..., :3][edge] = (num / np.maximum(den, 1e-6))[edge]
     t = np.clip((np.arange(a.shape[1], dtype=np.float32) - fade_from) / (fade_to - fade_from), 0, 1)
     a *= (t * t * (3 - 2 * t))[None, :]
     ys, xs = np.nonzero(a > 8)
@@ -83,7 +103,18 @@ def adam():
         alpha[yc:, x] = 0
         for k in range(1, 4):
             alpha[yc - k, x] = min(alpha[yc - k, x], int(255 * k / 4))
-    finish(upscale(crop, alpha), 80, 520, "adam", flip=False)
+    im = upscale(crop, alpha)
+    # The gap between his thumb and fingers is fresco background, pale plaster going
+    # to sky, and the matte half-kept it. In this box (2x crop coordinates) everything
+    # light and joined to it is background; the dark finger contours wall it off from
+    # the lit skin of the thumb, so a flood fill from inside the gap stops at them.
+    box = im[270:340, 1140:1215]
+    light = (box[..., :3].mean(axis=2) > 120).astype(np.uint8)
+    n, lab = cv2.connectedComponents(light, connectivity=4)
+    seed = lab[305 - 270, 1175 - 1140]
+    assert seed > 0, "gap seed is not on a light pixel"
+    box[..., 3][lab == seed] = 0
+    finish(im, 80, 520, "adam", flip=False)
 
 
 def god():
