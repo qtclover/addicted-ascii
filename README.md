@@ -81,6 +81,31 @@ three controls, and an unverified adjustment is reverted before entry.
 Portrait starts below a width/height ratio of 0.8. A two-CSS-pixel deadband prevents
 one-pixel resize jitter from switching the entire composition back and forth.
 
+## hands.html
+
+A second piece: Adam's and God's hands from Michelangelo's *Creation of Adam*, cut out
+of the fresco itself, reaching across a black field while a glossy white 3D "addicted"
+sways gently between their fingertips. Unlike `index.html` it has dependencies: three.js r170
+from jsDelivr (pinned, no SRI) and the assets in `hands/`.
+
+- `adam.webp`, `god.webp`: the fresco's forearms (public domain, Wikimedia Commons'
+  3524px scan), matted with BiRefNet, super-resolved 2x with EDSR, background seen
+  through the fingers removed, edges decontaminated, the far end of each arm faded into
+  the dark. `cutout.py` rebuilds them and prints the fingertips the CSS pins them by.
+- `addicted.glb`: the wordmark modelled in Blender in Instrument Serif, extruded with a
+  rounded bevel, meshopt-compressed to ~0.5MB. `word.py` rebuilds it (`--render` for a
+  Cycles still).
+
+The layout is CSS (container queries), so the hands arrive with no script at all. A
+tall screen turns the composition onto a diagonal. The word sways ±20° about face-on
+(never side-on, so never backwards); `?follow` turns it toward the pointer or the
+phone's tilt instead. It sits under a studio of hard lights for the gloss; it renders at the device's pixel ratio up to 3. Until three.js and
+the model arrive (or if they never do) the word is set as type. `?selftest` projects
+the word and checks it never reaches a fingertip, and that both hands and the word
+reach the screen. On arrival each arm slides in along its length and the word rises
+out of the dark; then the hands breathe, reaching a little toward each other and back,
+and the selftest checks the clearance at their nearest. Reduced motion holds it all still.
+
 ## Credits
 
 - Effect concept: [21st.dev/community/ascii](https://21st.dev/community/ascii)
