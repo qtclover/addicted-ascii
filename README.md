@@ -8,6 +8,14 @@ plain Canvas2D. Add `?donut` to swap the figure for a spinning
 
 No build step, no dependencies. Open `index.html`.
 
+`hands.html` is a second piece in the same hex-glyph language: two hands after
+Michelangelo's *Creation of Adam*, reaching across the middle of the screen. They
+drift in and out on a slow swell; a pointer or a held finger near the gap pulls
+them to their closest and a spark lights between the fingertips — but they never
+touch. On a phone the meeting turns onto the diagonal. `?selftest` checks that the
+two hands never share a cell and that at least two dark cells always separate them.
+Reduced motion gets one still frame.
+
 Drop a `music.mp4` beside it for the soundtrack — the entry gate is the click
 browsers require before audio may start, and it fades in over four seconds. With no
 file there, the gate still opens and the piece runs silent.
