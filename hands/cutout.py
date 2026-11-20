@@ -109,11 +109,15 @@ def adam():
     # light and joined to it is background; the dark finger contours wall it off from
     # the lit skin of the thumb, so a flood fill from inside the gap stops at them.
     box = im[270:340, 1140:1215]
-    light = (box[..., :3].mean(axis=2) > 120).astype(np.uint8)
+    # 100, not brighter: the fill runs right up to the dark painted contour, so a thin
+    # dark line rings the gap as it rings every other edge of the arm
+    light = (box[..., :3].mean(axis=2) > 100).astype(np.uint8)
     n, lab = cv2.connectedComponents(light, connectivity=4)
     seed = lab[305 - 270, 1175 - 1140]
     assert seed > 0, "gap seed is not on a light pixel"
-    box[..., 3][lab == seed] = 0
+    hole = (lab == seed).astype(np.float32)
+    # feathered ~1.5px, like the antialiasing on the outer edge, not a punched hole
+    box[..., 3] *= 1 - np.clip(cv2.GaussianBlur(hole, (0, 0), 1.1) * 1.6, 0, 1)
     finish(im, 80, 520, "adam", flip=False)
 
 
