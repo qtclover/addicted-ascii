@@ -106,7 +106,9 @@ compiled, a first frame drawn), so the entrance plays once, all together. If the
 isn't ready within 4s, or fails, the entrance goes ahead with the word as type, in
 Instrument Serif cut to the six letters it needs and inlined (3KB), so it never
 swaps fonts; a late 3D word then replaces it. The first view is five same-origin
-requests, all asked for from the `<head>`.
+requests, all asked for from the `<head>`. The arms' motion runs on the compositor
+(one transform animation at a time, plain keyframes), and the 3D canvas covers only
+the word's box, rendering its window of the full-screen view with `setViewOffset`.
 
 - `three-word.js`: three.js r170, only the parts the page uses (renderer, physical
   material, PMREM, GLTFLoader, meshopt decoder), bundled and minified with esbuild

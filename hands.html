@@ -25,7 +25,7 @@
      --dx/dy where each fingertip sits, off the centre
      --tilt  the arms' angle: level on a wide screen, a diagonal on a tall one
      --reach how far each hand breathes toward the word: well short of its clearance
-     --in    how far each arm slides in from on arrival */
+             (the keyframes move by a share of the arm's own width, which is this) */
   .scene {
     position: absolute; inset: 0;
     --word: min(30cqw, 62cqh);
@@ -34,8 +34,7 @@
     --dx: calc(var(--word) / 2 + var(--gap));
     --dy: 1.2cqh;                  /* on the ceiling God's finger sits a touch above Adam's */
     --tilt: 0deg;
-    --reach: calc(var(--word) * .035);
-    --in: calc(var(--hw) * .35);
+    --reach: calc(var(--hw) * .025);   /* = 2.5% of the arm: adam-reach / god-reach */
   }
   /* A phone is the reference's native shape, and a level band there is a caption in a
      void. Turned onto a diagonal the arms get the screen's height to come in from:
@@ -51,22 +50,36 @@
       --dx: calc(var(--word) * .235);
       --dy: calc(var(--word) * .37);
       --tilt: -58deg;
+      --reach: calc(var(--hw) * .015); /* = 1.5% of the arm: the -tall keyframes */
     }
+    #adam { --breathe: adam-reach-tall; }
+    #god  { --breathe: god-reach-tall; }
   }
   .hand { position: absolute; height: auto; pointer-events: none; user-select: none; -webkit-user-drag: none;
-          rotate: var(--tilt); opacity: 0; transition: opacity 1.2s ease; }
+          rotate: var(--tilt); opacity: 0; transition: opacity 1.2s ease;
+          /* own GPU layer: the slide and the breathing run on the compositor, smooth
+             to the subpixel and untouched by anything the page's script is doing */
+          will-change: transform, opacity; backface-visibility: hidden; }
   /* Each arm slides in along its own length as it fades up, then breathes: a slow
      reach toward the other and back, the fingertips closing a little and never
      meeting. `transform` works in the arm's own rotated frame, so on the diagonal
      they slide and reach along the diagonal too. */
-  .hand.in { opacity: 1; animation: var(--arrive) 1.8s cubic-bezier(.2, .7, .2, 1) both,
-                                    var(--breathe) 3.2s ease-in-out 1.8s infinite alternate; }
+  /* One transform animation at a time: two on one element (the slide still holding
+     its end while the breathing runs) keep a browser from compositing either. The
+     script swaps the slide for the breathing when the slide ends; both rest at 0
+     there, so the handover is seamless. */
+  .hand.in { opacity: 1; animation: var(--arrive) 1.8s cubic-bezier(.2, .7, .2, 1) both; }
+  .hand.in.settled { animation: var(--breathe) 3.2s ease-in-out infinite alternate; }
   #adam { --arrive: adam-in; --breathe: adam-reach; }
   #god  { --arrive: god-in;  --breathe: god-reach; }
-  @keyframes adam-in    { from { transform: translateX(calc(-1 * var(--in))); } to { transform: none; } }
-  @keyframes god-in     { from { transform: translateX(var(--in)); } to { transform: none; } }
-  @keyframes adam-reach { from { transform: none; } to { transform: translateX(var(--reach)); } }
-  @keyframes god-reach  { from { transform: none; } to { transform: translateX(calc(-1 * var(--reach))); } }
+  /* Plain percentages (of the arm's own width), no var(): keyframes a browser can
+     hand straight to the compositor. translate3d keeps them there. */
+  @keyframes adam-in         { from { transform: translate3d(-35%, 0, 0); } to { transform: translate3d(0, 0, 0); } }
+  @keyframes god-in          { from { transform: translate3d(35%, 0, 0); }  to { transform: translate3d(0, 0, 0); } }
+  @keyframes adam-reach      { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(2.5%, 0, 0); } }
+  @keyframes god-reach       { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-2.5%, 0, 0); } }
+  @keyframes adam-reach-tall { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(1.5%, 0, 0); } }
+  @keyframes god-reach-tall  { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-1.5%, 0, 0); } }
   /* each cut-out pinned by its index fingertip (pixel positions printed by cutout.py) */
   #adam { width: var(--hw);
           left: calc(50cqw - var(--dx) - var(--hw) * 0.99291);              /* tip x 1260 / 1269 */
@@ -88,7 +101,10 @@
           background: radial-gradient(closest-side, rgba(255, 255, 255, .085), rgba(255, 255, 255, .03) 60%, transparent);
           transition: opacity 1.2s ease; will-change: transform; }
   /* the word rises out of the dark between them as the arms arrive */
-  #word { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0;
+  /* The canvas covers the word's box and a margin, not the screen: the GPU shades only
+     the pixels the word can reach, a fraction of a full-screen canvas */
+  #word { position: absolute; left: calc(50cqw - var(--word) * .7); top: calc(50cqh - var(--word) * .32);
+          width: calc(var(--word) * 1.4); height: calc(var(--word) * .64); display: block; opacity: 0;
           translate: 0 calc(var(--word) * .06);
           transition: opacity 1.4s ease .5s, translate 1.8s cubic-bezier(.2, .7, .2, 1) .5s; }
   #word.in { translate: 0 0; }
@@ -213,12 +229,17 @@ async function loadWord() {
   let unit = 1;
   scene.add(word);
 
-  /* face-on, the model spans exactly the width the layout left for it */
+  /* The camera frames the whole screen; the canvas renders just its own window of that
+     view (setViewOffset), so the word sits where a full-screen canvas would put it.
+     Layout offsets, not the bounding box: the rise-in translate must not move the view.
+     Face-on, the model spans exactly the width the layout left for it. */
   const fit = () => {
-    const vw = canvas.clientWidth, vh = canvas.clientHeight;
-    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 3, Math.sqrt(PIXEL_CAP / (vw * vh))));
-    renderer.setSize(vw, vh, false);
+    const vw = $("stage").clientWidth, vh = $("stage").clientHeight;
+    const cw = canvas.offsetWidth, ch = canvas.offsetHeight;
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 3, Math.sqrt(PIXEL_CAP / (cw * ch))));
+    renderer.setSize(cw, ch, false);
     camera.aspect = vw / vh;
+    camera.setViewOffset(vw, vh, canvas.offsetLeft, canvas.offsetTop, cw, ch);
     camera.updateProjectionMatrix();
     const unitsPerPx = 2 * DIST * Math.tan(FOV * Math.PI / 360) * camera.aspect / vw;
     unit = $("wordbox").getBoundingClientRect().width * unitsPerPx / modelW;
@@ -296,7 +317,11 @@ let entered = false;
 function enter() {
   if (entered) return;
   entered = true;
-  $("adam").classList.add("in"); $("god").classList.add("in");
+  for (const id of ["adam", "god"]) {
+    const el = $(id);
+    el.addEventListener("animationend", () => el.classList.add("settled"), { once: true });
+    el.classList.add("in");
+  }
   if (three) { $("glow").classList.add("in"); $("word").classList.add("in"); start(); }
   else showStill(true);
 }
@@ -318,7 +343,8 @@ Promise.race([Promise.all([handsReady, wordReady]), new Promise(r => setTimeout(
 async function selftest() {
   const { THREE, camera, word, renderer, draw } = three;
   const res = [], ok = (c, m) => { res.push(c); console[c ? "log" : "error"]((c ? "PASS " : "FAIL ") + m); };
-  const vw = renderer.domElement.clientWidth, vh = renderer.domElement.clientHeight;
+  const vw = $("stage").clientWidth, vh = $("stage").clientHeight;
+  const cv = renderer.domElement, cl = cv.offsetLeft, ct = cv.offsetTop, cw = cv.offsetWidth, ch = cv.offsetHeight;
   const pt = id => { const r = $(id).getBoundingClientRect(); return [r.left, r.top]; };
   /* the tips as near as the breathing brings them: each moved --reach along its arm */
   const reach = $("reach").getBoundingClientRect().width;
@@ -326,7 +352,7 @@ async function selftest() {
   const [A0, G0] = [pt("tipA"), pt("tipG")], ux = Math.cos(tilt) * reach, uy = Math.sin(tilt) * reach;
   const A = [A0[0] + ux, A0[1] + uy], G = [G0[0] - ux, G0[1] - uy];
   const box = new THREE.Box3(), v = new THREE.Vector3();
-  let worst = Infinity;
+  let worst = Infinity, clipped = 0;
   const yawMax = Math.max(SWAY, YAW, Math.abs(POSE));
   for (let i = 0; i <= 40; i++) for (let j = 0; j <= 4; j++) {
     word.rotation.y = -yawMax + 2 * yawMax * i / 40;
@@ -336,13 +362,15 @@ async function selftest() {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     for (let c = 0; c < 8; c++) {
       v.set(c & 1 ? box.max.x : box.min.x, c & 2 ? box.max.y : box.min.y, c & 4 ? box.max.z : box.min.z).project(camera);
-      const x = (v.x + 1) / 2 * vw, y = (1 - v.y) / 2 * vh;
+      const x = cl + (v.x + 1) / 2 * cw, y = ct + (1 - v.y) / 2 * ch;
       x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
     }
+    if (x0 < cl || x1 > cl + cw || y0 < ct || y1 > ct + ch) clipped++;
     /* how far outside the box each tip is (negative = inside) */
     for (const [x, y] of [A, G]) worst = Math.min(worst, Math.max(x0 - x, x - x1, y0 - y, y - y1));
   }
   word.rotation.x = 0;
+  ok(clipped === 0, "the word stays inside its canvas in every pose (" + clipped + " clipped)");
   ok(worst > 4, "the word never reaches a fingertip, even at the hands' nearest (closest " + worst.toFixed(1) + "px outside its bounds)");
   await handsReady;
   ok($("adam").naturalWidth === 1269 && $("god").naturalWidth === 1256, "both hands decoded at full size");
@@ -353,11 +381,11 @@ async function selftest() {
   const wb = $("wordbox").getBoundingClientRect();
   let ink = 0;
   for (let i = 0; i < 60; i++) {
-    gl.readPixels(Math.round((wb.left + wb.width * (0.05 + 0.9 * i / 59)) * dpr), Math.round((vh - wb.top) * dpr), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.readPixels(Math.round((wb.left - cl + wb.width * (0.05 + 0.9 * i / 59)) * dpr), Math.round((ch - (wb.top - ct)) * dpr), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     ink = Math.max(ink, px[3]);
   }
   ok(ink > 200, "the word renders (alpha " + ink + ")");
-  ok(Math.abs(dpr - Math.min(devicePixelRatio, 3, Math.sqrt(PIXEL_CAP / (vw * vh)))) < 1e-6, "renders at the device's pixel ratio (" + dpr.toFixed(2) + ")");
+  ok(Math.abs(dpr - Math.min(devicePixelRatio, 3, Math.sqrt(PIXEL_CAP / (cw * ch)))) < 1e-6, "renders at the device's pixel ratio (" + dpr.toFixed(2) + ")");
   console.log((res.every(Boolean) ? "SELFTEST PASS" : "SELFTEST FAIL") + " (" + vw + "x" + vh + " @" + devicePixelRatio + ")");
 }
 </script>
