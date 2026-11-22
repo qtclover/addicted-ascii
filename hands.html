@@ -4,22 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <link rel="icon" href="data:,">
-<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" crossorigin>
-<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/loaders/GLTFLoader.js" crossorigin>
-<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/utils/BufferGeometryUtils.js" crossorigin>
-<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/meshopt_decoder.module.js" crossorigin>
+<!-- everything the first view needs, from this site and asked for at once: no other
+     origins, nothing render-blocking but the inline CSS -->
+<link rel="preload" href="hands/adam.webp" as="image" type="image/webp" fetchpriority="high">
+<link rel="preload" href="hands/god.webp" as="image" type="image/webp" fetchpriority="high">
+<link rel="modulepreload" href="hands/three-word.js">
 <link rel="preload" href="hands/addicted.glb" as="fetch" type="model/gltf-binary" crossorigin>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:wght@400&display=swap" rel="stylesheet">
-<script type="importmap">
-{ "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
-} }
-</script>
 <style>
+  /* Instrument Serif cut to the six letters of "addicted" (3KB), inline: the type
+     fallback is in its own face from its first frame, never a stand-in swapped later */
+  @font-face { font-family: "Instrument Serif"; font-display: block;
+               src: url(data:font/woff2;base64,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) format("woff2"); }
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   #stage { position: fixed; inset: 0; container-type: size; }
@@ -114,8 +109,8 @@
 <div id="stage">
   <div class="scene" role="img"
        aria-label="Adam's and God's hands from Michelangelo's Creation of Adam reach toward each other across a black field, and between their fingertips the word addicted sways gently in glossy white.">
-    <img class="hand" id="adam" src="hands/adam.webp" width="1269" height="474" alt="" decoding="async">
-    <img class="hand" id="god" src="hands/god.webp" width="1256" height="532" alt="" decoding="async">
+    <img class="hand" id="adam" src="hands/adam.webp" width="1269" height="474" alt="" fetchpriority="high">
+    <img class="hand" id="god" src="hands/god.webp" width="1256" height="532" alt="" fetchpriority="high">
     <div class="tip" id="tipA"></div><div class="tip" id="tipG"></div><div id="wordbox"></div><div id="reach"></div>
     <div id="glow"></div>
     <canvas id="word"></canvas>
@@ -128,9 +123,13 @@
    "almost" — Adam and God from the Sistine ceiling, the word
    standing in the gap. The hands are the fresco itself, cut out
    (hands/cutout.py) and placed by CSS; the word is a Blender
-   model of the wordmark (hands/word.py) drawn live with three.js,
-   loaded so that a slow or missing CDN costs the word its third
-   dimension and nothing else.
+   model of the wordmark (hands/word.py) drawn live with three.js
+   (hands/three-word.js: just the parts this page uses, bundled).
+   Nothing shows until it can all arrive together: the hands, the
+   word with its shaders compiled and a first frame drawn. Then the
+   entrance plays once, start to finish. A slow network gets the
+   entrance after 4s with the word as type; a failed load the same,
+   for good.
    ?follow    the word turns toward the pointer, or the phone's tilt,
               instead of swaying on its own
    ?selftest  console checks
@@ -146,24 +145,16 @@ const RM = matchMedia("(prefers-reduced-motion: reduce)");
 const FOV = 20, DIST = 12;
 const PIXEL_CAP = 8.3e6;         /* device pixels: a 4K screen's worth, so DPR 3 phones render 1:1 */
 
-/* hands: each fades up the moment it has decoded, whatever the word is doing */
-const handsReady = Promise.all(["adam", "god"].map(id => {
-  const img = $(id);
-  return img.decode().catch(() => {}).then(() => img.classList.add("in"));
-}));
+const GATE_MS = 4000;             /* longest the entrance waits for the 3D */
+const handsReady = Promise.all(["adam", "god"].map(id => $(id).decode().catch(() => {})));
 
 let three = null;   /* set once the 3D is up */
 const showStill = on => { $("still").classList.toggle("in", on); $("glow").classList.add("in"); };
-/* slow network: the word as type after a beat, swapped for the 3D if that comes later */
-const stillTimer = setTimeout(() => { if (!three) showStill(true); }, 2500);
 
 async function loadWord() {
-  /* dynamic, so a CDN that fails rejects here at once rather than silently never running */
-  const [THREE, { GLTFLoader }, { MeshoptDecoder }] = await Promise.all([
-    import("three"),
-    import("three/addons/loaders/GLTFLoader.js"),
-    import("three/addons/libs/meshopt_decoder.module.js")
-  ]);
+  /* dynamic, so a bundle that fails rejects here at once rather than silently never running */
+  const THREE = await import("./hands/three-word.js");
+  const { GLTFLoader, MeshoptDecoder } = THREE;
   const canvas = $("word");
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true,
                                              powerPreference: "high-performance", preserveDrawingBuffer: Q.has("selftest") });
@@ -240,6 +231,13 @@ async function loadWord() {
     glow.style.transform = "scaleX(" + (0.3 + 0.7 * Math.abs(Math.cos(angle))).toFixed(3) + ")";
     renderer.render(scene, camera);
   };
+  /* Compile every shader now, off the main thread where the browser can, and draw a
+     first frame while the canvas is still hidden: the first visible frame then costs
+     nothing, and the arms' slide-in never stalls on a shader build. */
+  fit();
+  word.rotation.y = POSE; word.scale.setScalar(unit);
+  await renderer.compileAsync(scene, camera);
+  draw(POSE);
   return { THREE, renderer, camera, word, fit, draw };
 }
 
@@ -293,21 +291,25 @@ function start() {
 addEventListener("resize", () => { if (three) { three.fit(); if (RM.matches) three.draw(POSE); } });
 RM.addEventListener("change", start);
 
-loadWord().then(t => {
+/* The entrance: both arms together, the word rising behind them. */
+let entered = false;
+function enter() {
+  if (entered) return;
+  entered = true;
+  $("adam").classList.add("in"); $("god").classList.add("in");
+  if (three) { $("glow").classList.add("in"); $("word").classList.add("in"); start(); }
+  else showStill(true);
+}
+const wordReady = loadWord().then(t => {
   three = t;
-  clearTimeout(stillTimer);
-  three.fit();
-  three.draw(POSE);
-  /* if the type is up, it leaves before the 3D arrives: never two words at once */
-  const typeUp = $("still").classList.contains("in");
-  showStill(false);
-  setTimeout(() => { $("word").classList.add("in"); start(); }, typeUp ? 450 : 0);
+  if (entered) {
+    /* came after the entrance: the type leaves before the 3D arrives, never two words at once */
+    showStill(false);
+    setTimeout(() => { $("word").classList.add("in"); start(); }, 450);
+  }
   if (Q.has("selftest")) selftest();
-}).catch(e => {
-  console.error("3D word unavailable, showing it as type:", e);
-  clearTimeout(stillTimer);
-  showStill(true);
-});
+}).catch(e => console.error("3D word unavailable, showing it as type:", e));
+Promise.race([Promise.all([handsReady, wordReady]), new Promise(r => setTimeout(r, GATE_MS))]).then(enter);
 
 /* ---------- ?selftest ----------
    The word moves between the fingertips without reaching either: project its bounds

@@ -1,13 +1,13 @@
 """Model "addicted" in Blender: the wordmark's own face, extruded, bevelled, white.
 
   python word.py FONT.ttf OUT_DIR [--render]          (bpy from PyPI, Blender 5.3)
-  npx @gltf-transform/cli meshopt OUT_DIR/addicted.raw.glb hands/addicted.glb --level medium
+  npx @gltf-transform/cli meshopt OUT_DIR/addicted.raw.glb hands/addicted.glb --level high
 
 FONT.ttf   Instrument Serif Regular (OFL). audit/instrument.woff2 converts with
            fontTools: f = TTFont(path); f.flavor = None; f.save("instrument.ttf")
 --render   also writes OUT_DIR/word_render.png, a Cycles still to check the bevel by
 The PyPI bpy has no Draco or meshopt bridge, so compression is a second step:
-gltf-transform's meshopt takes the export from 1.6MB to ~0.5MB, decoded in the
+gltf-transform's meshopt (quantized) takes the export from 1.6MB to ~340KB, decoded in the
 page by three.js's MeshoptDecoder with no extra fetch.
 """
 import math
