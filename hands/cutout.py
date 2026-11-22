@@ -1,7 +1,7 @@
 """Cut Adam's and God's forearms out of the Creation of Adam fresco.
 
 Builds hands/adam.webp and hands/god.webp (transparent, the far end of each arm
-fading into the dark) and prints each index fingertip, which hands.html places.
+fading into the dark) and prints each index fingertip, which index.html places.
 
   python cutout.py FRESCO.jpg EDSR_x2.pb OUT_DIR [adam|god]
 
