@@ -58,8 +58,10 @@
   .hand { position: absolute; height: auto; pointer-events: none; user-select: none; -webkit-user-drag: none;
           rotate: var(--tilt); opacity: 0; transition: opacity 1.2s ease;
           /* own GPU layer: the slide and the breathing run on the compositor, smooth
-             to the subpixel and untouched by anything the page's script is doing */
-          will-change: transform, opacity; backface-visibility: hidden; }
+             to the subpixel and untouched by anything the page's script is doing.
+             No backface-visibility: hidden here: Firefox will not composite a transform
+             animation on an element that has it, and runs it on the main thread. */
+          will-change: transform, opacity; }
   /* Each arm slides in along its own length as it fades up, then breathes: a slow
      reach toward the other and back, the fingertips closing a little and never
      meeting. `transform` works in the arm's own rotated frame, so on the diagonal
