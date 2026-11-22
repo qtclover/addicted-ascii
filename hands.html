@@ -75,13 +75,18 @@
   #adam { --arrive: adam-in; --breathe: adam-reach; }
   #god  { --arrive: god-in;  --breathe: god-reach; }
   /* Plain percentages (of the arm's own width), no var(): keyframes a browser can
-     hand straight to the compositor. translate3d keeps them there. */
-  @keyframes adam-in         { from { transform: translate3d(-35%, 0, 0); } to { transform: translate3d(0, 0, 0); } }
-  @keyframes god-in          { from { transform: translate3d(35%, 0, 0); }  to { transform: translate3d(0, 0, 0); } }
-  @keyframes adam-reach      { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(2.5%, 0, 0); } }
-  @keyframes god-reach       { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-2.5%, 0, 0); } }
-  @keyframes adam-reach-tall { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(1.5%, 0, 0); } }
-  @keyframes god-reach-tall  { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-1.5%, 0, 0); } }
+     hand straight to the compositor.
+     Each arm also carries a slight turn about its fingertip (the transform origin),
+     never zero. A purely sideways move is one Firefox snaps to whole device pixels,
+     and at the breathing's ~5px a second that is a step every few frames: a stutter.
+     A turned layer is not snapped, so it glides. The turn grows as the arm reaches,
+     lifting the shoulder end a few pixels, and the fingertip does not move with it. */
+  @keyframes adam-in         { from { transform: translate3d(-35%, 0, 0) rotate(.15deg); } to { transform: translate3d(0, 0, 0) rotate(.15deg); } }
+  @keyframes god-in          { from { transform: translate3d(35%, 0, 0) rotate(-.15deg); } to { transform: translate3d(0, 0, 0) rotate(-.15deg); } }
+  @keyframes adam-reach      { from { transform: translate3d(0, 0, 0) rotate(.15deg); }  to { transform: translate3d(2.5%, 0, 0) rotate(.6deg); } }
+  @keyframes god-reach       { from { transform: translate3d(0, 0, 0) rotate(-.15deg); } to { transform: translate3d(-2.5%, 0, 0) rotate(-.6deg); } }
+  @keyframes adam-reach-tall { from { transform: translate3d(0, 0, 0) rotate(.15deg); }  to { transform: translate3d(1.5%, 0, 0) rotate(.6deg); } }
+  @keyframes god-reach-tall  { from { transform: translate3d(0, 0, 0) rotate(-.15deg); } to { transform: translate3d(-1.5%, 0, 0) rotate(-.6deg); } }
   /* each cut-out pinned by its index fingertip (pixel positions printed by cutout.py) */
   #adam { width: var(--hw);
           left: calc(50cqw - var(--dx) - var(--hw) * 0.99291);              /* tip x 1260 / 1269 */
