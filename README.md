@@ -81,6 +81,49 @@ three controls, and an unverified adjustment is reverted before entry.
 Portrait starts below a width/height ratio of 0.8. A two-CSS-pixel deadband prevents
 one-pixel resize jitter from switching the entire composition back and forth.
 
+## hands.html
+
+A second piece: Adam's and God's hands from Michelangelo's *Creation of Adam*, cut out
+of the fresco itself, reaching across a black field while a glossy white 3D "addicted"
+sways gently between their fingertips. Like `index.html` it loads nothing from other
+sites: everything is in `hands/`.
+
+- `adam.webp`, `god.webp`: the fresco's forearms (public domain, Wikimedia Commons'
+  3524px scan), matted with BiRefNet, super-resolved 2x with EDSR, background seen
+  through the fingers removed, edges decontaminated, the far end of each arm faded into
+  the dark. `cutout.py` rebuilds them and prints the fingertips the CSS pins them by.
+- `addicted.glb`: the wordmark modelled in Blender in Instrument Serif, extruded with a
+  rounded bevel, meshopt-compressed (quantized) to ~340KB. `word.py` rebuilds it (`--render` for a
+  Cycles still).
+
+The layout is CSS (container queries), so the hands arrive with no script at all. A
+tall screen turns the composition onto a diagonal. The word sways ±20° about face-on
+(never side-on, so never backwards); `?follow` turns it toward the pointer or the
+phone's tilt instead. It sits under a studio of hard lights for the gloss; it renders at the device's pixel ratio up to 3.
+
+Loading: nothing shows until the hands have decoded and the word is ready (shaders
+compiled, a first frame drawn), so the entrance plays once, all together. If the 3D
+isn't ready within 4s, or fails, the entrance goes ahead with the word as type, in
+Instrument Serif cut to the six letters it needs and inlined (3KB), so it never
+swaps fonts; a late 3D word then replaces it. The first view is five same-origin
+requests, all asked for from the `<head>`. The arms' motion runs on the compositor
+(one transform animation at a time, plain keyframes), and the 3D canvas covers only
+the word's box, rendering its window of the full-screen view with `setViewOffset`.
+
+- `three-word.js`: three.js r170, only the parts the page uses (renderer, physical
+  material, PMREM, GLTFLoader, meshopt decoder), bundled and minified with esbuild
+  from `three-word.entry.js`:
+  `esbuild three-word.entry.js --bundle --format=esm --minify --target=es2020 --legal-comments=eof --outfile=three-word.js`
+  (with `three@0.170.0` installed). ~148KB gzipped, against ~300KB for the four CDN
+  modules it replaces.
+- The inline font: `pyftsubset instrument.woff2 --text=addicted --flavor=woff2`.
+
+`?selftest` projects
+the word and checks it never reaches a fingertip, and that both hands and the word
+reach the screen. On arrival each arm slides in along its length and the word rises
+out of the dark; then the hands breathe, reaching a little toward each other and back,
+and the selftest checks the clearance at their nearest. Reduced motion holds it all still.
+
 ## Credits
 
 - Effect concept: [21st.dev/community/ascii](https://21st.dev/community/ascii)
